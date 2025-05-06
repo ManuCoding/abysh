@@ -56,16 +56,28 @@ void parse_args(StrArr* cmd,char* command) {
 }
 
 int main() {
-	printf("> ");
 	char command[MAX_CMD_LEN];
-	fgets(command,sizeof(command),stdin);
 	StrArr cmd={0};
-	parse_args(&cmd,command);
-	if(cmd.len) {
-		for(size_t i=0; i<cmd.len; i++) {
-			printf("got arg: `%s`\n",cmd.items[i]);
+	while(1) {
+		printf("> ");
+		command[0]='\0';
+		if(!fgets(command,sizeof(command),stdin)) {
+			return 0;
 		}
-	} else {
-		printf("welp, empty command\n");
+		command[MAX_CMD_LEN-1]='\0';
+		memset(&cmd,0,sizeof(cmd));
+		parse_args(&cmd,command);
+		if(cmd.len) {
+			if(strcmp(cmd.items[0],"exit")==0) return 0;
+			if(strcmp(cmd.items[0],"hax")==0) {
+				printf("breaking your code >:)\n");
+				fclose(stdin);
+			}
+			for(size_t i=0; i<cmd.len; i++) {
+				printf("got arg: `%s`\n",cmd.items[i]);
+			}
+		} else {
+			printf("welp, empty command\n");
+		}
 	}
 }
