@@ -57,7 +57,12 @@ void parse_args(StrArr* cmd,char* command) {
 	if(tlen) da_append(cmd,command+len-tlen);
 }
 
-int main() {
+int main(int argc,char** argv) {
+	char* pname=argv[0];
+	if(argc<1) {
+		pname="(abysh)";
+		fprintf(stderr,"%s: Warning: weird environment\n",pname);
+	}
 	char command[MAX_CMD_LEN];
 	StrArr cmd={0};
 	while(1) {
@@ -83,6 +88,8 @@ int main() {
 					printf("Unknown command: %s\n",cmd.items[0]);
 					return 127;
 				}
+				fprintf(stderr,"%s: internal error\n",pname);
+				return 1;
 			} else {
 				int status;
 				waitpid(pid,&status,0);
