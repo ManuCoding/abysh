@@ -2,6 +2,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 #define MAX_CMD_LEN 4096
 
@@ -73,11 +75,19 @@ int main() {
 				printf("breaking your code >:)\n");
 				fclose(stdin);
 			}
-			for(size_t i=0; i<cmd.len; i++) {
-				printf("got arg: `%s`\n",cmd.items[i]);
+			da_append(&cmd,NULL);
+			pid_t pid=fork();
+			if(pid==0) {
+				int res=execvp(cmd.items[0],cmd.items);
+				if(res<0) {
+					printf("Unknown command: %s\n",cmd.items[0]);
+					return 127;
+				}
+			} else {
+				int status;
+				waitpid(pid,&status,0);
+				printf("ret: %d\n",WEXITSTATUS(status));
 			}
-		} else {
-			printf("welp, empty command\n");
 		}
 	}
 }
