@@ -1,9 +1,12 @@
-#include <stdio.h>
-#include <string.h>
+#include <stdbool.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
+#include <string.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #define MAX_CMD_LEN 4096
 
@@ -57,16 +60,32 @@ void parse_args(StrArr* cmd,char* command) {
 	if(tlen) da_append(cmd,command+len-tlen);
 }
 
+void remove_dir(char* res,char* path) {
+	char* shortpath=path;
+	for(size_t i=0; path && path[i]; i++) {
+		if(path[i]=='/') {
+			shortpath=path+i+1;
+		}
+	}
+	strcpy(res,shortpath);
+}
+
 int main(int argc,char** argv) {
 	char* pname=argv[0];
-	if(argc<1) {
+	remove_dir(pname,pname);
+	if(strlen(pname)==0 || argc<1) {
 		pname="(abysh)";
 		fprintf(stderr,"%s: Warning: weird environment\n",pname);
 	}
 	char command[MAX_CMD_LEN];
+	char cwd[PATH_MAX];
+	char promptpath[PATH_MAX];
 	StrArr cmd={0};
 	while(1) {
-		printf("> ");
+		getcwd(cwd,PATH_MAX);
+		remove_dir(promptpath,cwd);
+		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
+		printf("%s %s > ",pname,promptpath);
 		command[0]='\0';
 		if(!fgets(command,sizeof(command),stdin)) {
 			return 0;
@@ -80,12 +99,25 @@ int main(int argc,char** argv) {
 				printf("breaking your code >:)\n");
 				fclose(stdin);
 			}
+			if(strcmp(cmd.items[0],"cd")==0) {
+				char* newdir;
+				if(cmd.len==1) {
+					newdir=getenv("HOME");
+				} else {
+					newdir=cmd.items[1];
+				}
+				int res=chdir(newdir);
+				if(res<0) {
+					fprintf(stderr,"%s: cd %s: %s\n",pname,newdir,strerror(errno));
+				}
+				continue;
+			}
 			da_append(&cmd,NULL);
 			pid_t pid=fork();
 			if(pid==0) {
 				int res=execvp(cmd.items[0],cmd.items);
 				if(res<0) {
-					printf("Unknown command: %s\n",cmd.items[0]);
+					fprintf(stderr,"Unknown command: %s\n",cmd.items[0]);
 					return 127;
 				}
 				fprintf(stderr,"%s: internal error\n",pname);
