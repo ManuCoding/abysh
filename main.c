@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #define MAX_CMD_LEN 4096
+#define VERSION "0.1.0"
 
 typedef struct {
 	char** items;
@@ -70,6 +71,10 @@ void remove_dir(char* res,char* path) {
 	strcpy(res,shortpath);
 }
 
+void version(char* program,FILE* fd) {
+	fprintf(fd,"%s (Abyss Shell) version %s\n",program,VERSION);
+}
+
 int main(int argc,char** argv) {
 	char* pname=argv[0];
 	remove_dir(pname,pname);
@@ -110,6 +115,10 @@ int main(int argc,char** argv) {
 				if(res<0) {
 					fprintf(stderr,"%s: cd %s: %s\n",pname,newdir,strerror(errno));
 				}
+				continue;
+			}
+			if(strcmp(cmd.items[0],"version")==0) {
+				version(pname,stdout);
 				continue;
 			}
 			da_append(&cmd,NULL);
