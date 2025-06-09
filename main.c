@@ -75,6 +75,17 @@ void version(char* program,FILE* fd) {
 	fprintf(fd,"%s (Abyss Shell) version %s\n",program,VERSION);
 }
 
+void help(char* program,FILE* fd) {
+	version(program,fd);
+	fprintf(fd,"\n");
+	fprintf(fd,"List of builtin commands:\n");
+	fprintf(fd,"    exit           Close the shell\n");
+	fprintf(fd,"    hax            Attempt to close STDIN (bug testing)\n");
+	fprintf(fd,"    cd directory   Change CWD to directory\n");
+	fprintf(fd,"    version        Prints the version of the shell in a single line\n");
+	fprintf(fd,"    help           Print this help\n");
+}
+
 int main(int argc,char** argv) {
 	char* pname=argv[0];
 	remove_dir(pname,pname);
@@ -119,6 +130,10 @@ int main(int argc,char** argv) {
 			}
 			if(strcmp(cmd.items[0],"version")==0) {
 				version(pname,stdout);
+				continue;
+			}
+			if(strcmp(cmd.items[0],"help")==0) {
+				help(pname,stdout);
 				continue;
 			}
 			da_append(&cmd,NULL);
