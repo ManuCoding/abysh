@@ -35,12 +35,14 @@ typedef struct {
 
 size_t trim(char** str) {
 	size_t len=strnlen(*str,MAX_CMD_LEN);
-	while(len && isspace((*str)[--len])) {}
+	while(len && isspace((*str)[len-1])) {
+		len--;
+	}
 	while(len && (*str)[0] && isspace((*str)[0])) {
 		(*str)++;
 		len--;
 	}
-	if(len+1<MAX_CMD_LEN) (*str)[len+1]='\0';
+	if(len<MAX_CMD_LEN) (*str)[len]='\0';
 	return len;
 }
 
