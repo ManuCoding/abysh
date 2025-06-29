@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <termios.h>
 
 #define MAX_CMD_LEN 4096
 #define VERSION "0.1.0"
@@ -73,6 +74,10 @@ void remove_dir(char* res,char* path) {
 	strcpy(res,shortpath);
 }
 
+typedef struct termios Termios;
+Termios initial_state={0};
+int keys_fd=0;
+
 void version(char* program,FILE* fd) {
 	fprintf(fd,"%s (Abyss Shell) version %s\n",program,VERSION);
 }
@@ -98,16 +103,40 @@ int main(int argc,char** argv) {
 	char command[MAX_CMD_LEN];
 	char cwd[PATH_MAX];
 	char promptpath[PATH_MAX];
+	char prompt[PATH_MAX*2];
 	StrArr cmd={0};
+	Termios raw=initial_state;
+	// raw.c_lflag&=~(ICANON|ECHO); // Disable canonical mode and echo
+	// raw.c_cc[VMIN]=1;  // Read at least 1 character
+	// raw.c_cc[VTIME]=0; // No timeout
 	while(1) {
 		getcwd(cwd,PATH_MAX);
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
-		printf("%s %s > ",pname,promptpath);
+		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
+		printf("%s",prompt);
 		command[0]='\0';
-		if(!fgets(command,sizeof(command),stdin)) {
-			return 0;
+		tcsetattr(keys_fd,TCSAFLUSH,&raw);
+		size_t idx=0;
+		char ch=0;
+		while(ch!='\n') {
+			ch=getchar();
+			if(!ch) break;
+			switch(ch) {
+				case 'A'-'@':
+					printf("C-a");
+					break;
+				default:
+					printf("%c",ch);
+					if(idx>=sizeof(command)) continue;
+					command[idx]=ch;
+					idx++;
+			}
 		}
+		tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
+		// if(!fgets(command,sizeof(command),stdin)) {
+		// 	return 0;
+		// }
 		command[MAX_CMD_LEN-1]='\0';
 		memset(&cmd,0,sizeof(cmd));
 		parse_args(&cmd,command);
