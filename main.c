@@ -105,10 +105,11 @@ int main(int argc,char** argv) {
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
 	StrArr cmd={0};
+	tcgetattr(keys_fd,&initial_state);
 	Termios raw=initial_state;
-	// raw.c_lflag&=~(ICANON|ECHO); // Disable canonical mode and echo
-	// raw.c_cc[VMIN]=1;  // Read at least 1 character
-	// raw.c_cc[VTIME]=0; // No timeout
+	raw.c_lflag&=~(ICANON|ECHO); // Disable canonical mode and echo
+	raw.c_cc[VMIN]=1;  // Read at least 1 character
+	raw.c_cc[VTIME]=0; // No timeout
 	while(1) {
 		getcwd(cwd,PATH_MAX);
 		remove_dir(promptpath,cwd);
@@ -118,25 +119,33 @@ int main(int argc,char** argv) {
 		command[0]='\0';
 		tcsetattr(keys_fd,TCSAFLUSH,&raw);
 		size_t idx=0;
-		char ch=0;
+		unsigned char ch=0;
 		while(ch!='\n') {
 			ch=getchar();
 			if(!ch) break;
 			switch(ch) {
 				case 'A'-'@':
-					printf("C-a");
+					printf("\x1b""7\rC-a\x1b""8");
+					break;
+				case 'D'-'@':
+					// FIXME very hacky way of quitting :)
+					if(idx==0) {
+						sprintf(command,"exit");
+						idx=4;
+						ch='\n';
+					}
 					break;
 				default:
+					if(ch<' ') continue;
 					printf("%c",ch);
 					if(idx>=sizeof(command)) continue;
 					command[idx]=ch;
 					idx++;
 			}
 		}
+		printf("\n");
+		if(idx<sizeof(command)) command[idx]='\0';
 		tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
-		// if(!fgets(command,sizeof(command),stdin)) {
-		// 	return 0;
-		// }
 		command[MAX_CMD_LEN-1]='\0';
 		memset(&cmd,0,sizeof(cmd));
 		parse_args(&cmd,command);
