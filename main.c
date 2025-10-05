@@ -78,6 +78,46 @@ typedef struct termios Termios;
 Termios initial_state={0};
 int keys_fd=0;
 
+void readline(char* prompt,char* command) {
+	size_t idx=0;
+	tcgetattr(keys_fd,&initial_state);
+	Termios raw=initial_state;
+	raw.c_lflag&=~(ICANON|ECHO);
+	raw.c_cc[VMIN]=1;
+	raw.c_cc[VTIME]=0;
+	printf("%s",prompt);
+	command[0]='\0';
+	tcsetattr(keys_fd,TCSAFLUSH,&raw);
+	unsigned char ch=0;
+	while(ch!='\n') {
+		ch=getchar();
+		if(!ch) break;
+		switch(ch) {
+			case 'A'-'@':
+				printf("\x1b""7\rC-a\x1b""8");
+				break;
+			case 'D'-'@':
+				// FIXME very hacky way of quitting :)
+				if(idx==0) {
+					sprintf(command,"exit");
+					idx=4;
+					ch='\n';
+				}
+				break;
+			default:
+				if(ch<' ') continue;
+				printf("%c",ch);
+				if(idx>=MAX_CMD_LEN) continue;
+				command[idx]=ch;
+				idx++;
+		}
+	}
+	printf("\n");
+	if(idx<MAX_CMD_LEN) command[idx]='\0';
+	tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
+	command[MAX_CMD_LEN-1]='\0';
+}
+
 void version(char* program,FILE* fd) {
 	fprintf(fd,"%s (Abyss Shell) version %s\n",program,VERSION);
 }
@@ -105,48 +145,12 @@ int main(int argc,char** argv) {
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
 	StrArr cmd={0};
-	tcgetattr(keys_fd,&initial_state);
-	Termios raw=initial_state;
-	raw.c_lflag&=~(ICANON|ECHO); // Disable canonical mode and echo
-	raw.c_cc[VMIN]=1;  // Read at least 1 character
-	raw.c_cc[VTIME]=0; // No timeout
 	while(1) {
 		getcwd(cwd,PATH_MAX);
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
-		printf("%s",prompt);
-		command[0]='\0';
-		tcsetattr(keys_fd,TCSAFLUSH,&raw);
-		size_t idx=0;
-		unsigned char ch=0;
-		while(ch!='\n') {
-			ch=getchar();
-			if(!ch) break;
-			switch(ch) {
-				case 'A'-'@':
-					printf("\x1b""7\rC-a\x1b""8");
-					break;
-				case 'D'-'@':
-					// FIXME very hacky way of quitting :)
-					if(idx==0) {
-						sprintf(command,"exit");
-						idx=4;
-						ch='\n';
-					}
-					break;
-				default:
-					if(ch<' ') continue;
-					printf("%c",ch);
-					if(idx>=sizeof(command)) continue;
-					command[idx]=ch;
-					idx++;
-			}
-		}
-		printf("\n");
-		if(idx<sizeof(command)) command[idx]='\0';
-		tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
-		command[MAX_CMD_LEN-1]='\0';
+		readline(prompt,command);
 		memset(&cmd,0,sizeof(cmd));
 		parse_args(&cmd,command);
 		if(cmd.len) {
