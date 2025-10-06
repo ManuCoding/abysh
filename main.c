@@ -156,6 +156,8 @@ move_left:
 			default:
 				if(ch<' ') continue;
 				if(idx+1>=MAX_CMD_LEN) continue;
+				curlen++;
+				if(curlen>=MAX_CMD_LEN) curlen=MAX_CMD_LEN-1;
 				if(idx<curlen) {
 					printf("\x1b""7 %.*s\x1b""8",(int)(curlen-idx-1),command+idx);
 					for(size_t i=curlen; i>idx; i--) {
@@ -165,7 +167,6 @@ move_left:
 				printf("%c",ch);
 				command[idx]=ch;
 				idx++;
-				curlen++;
 		}
 		if(curlen<MAX_CMD_LEN) command[curlen]='\0';
 		else curlen--;
