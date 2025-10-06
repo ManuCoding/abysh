@@ -142,6 +142,17 @@ move_left:
 				goto move_right;
 			case 'B'-'@':
 				goto move_left;
+			case 'H'-'@':
+			case 127: // Backspace
+				if(idx>0) {
+					for(size_t i=idx-1; i<curlen && i+1<MAX_CMD_LEN; i++) {
+						command[i]=command[i+1];
+					}
+					curlen--;
+					printf("\x1b[D\x1b""7%s \x1b""8",command+idx);
+					idx--;
+				}
+				break;
 			default:
 				if(ch<' ') continue;
 				if(idx>=MAX_CMD_LEN) continue;
