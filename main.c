@@ -149,15 +149,15 @@ move_left:
 						command[i]=command[i+1];
 					}
 					curlen--;
-					printf("\x1b[D\x1b""7%s \x1b""8",command+idx);
+					printf("\x1b[D\x1b""7%.*s \x1b""8",(int)(curlen-idx),command+idx);
 					idx--;
 				}
 				break;
 			default:
 				if(ch<' ') continue;
-				if(idx>=MAX_CMD_LEN) continue;
+				if(idx+1>=MAX_CMD_LEN) continue;
 				if(idx<curlen) {
-					printf("\x1b""7 %s\x1b""8",command+idx);
+					printf("\x1b""7 %.*s\x1b""8",(int)(curlen-idx-1),command+idx);
 					for(size_t i=curlen; i>idx; i--) {
 						command[i]=command[i-1];
 					}
@@ -167,9 +167,10 @@ move_left:
 				idx++;
 				curlen++;
 		}
+		if(curlen<MAX_CMD_LEN) command[curlen]='\0';
+		else curlen--;
 	}
 	printf("\n");
-	if(curlen<MAX_CMD_LEN) command[curlen]='\0';
 	tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
 	command[MAX_CMD_LEN-1]='\0';
 }
