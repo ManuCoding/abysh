@@ -80,6 +80,8 @@ int keys_fd=0;
 
 void readline(char* prompt,char* command) {
 	size_t idx=0;
+	size_t curlen=0;
+	size_t prompt_len=strlen(prompt);
 	tcgetattr(keys_fd,&initial_state);
 	Termios raw=initial_state;
 	raw.c_lflag&=~(ICANON|ECHO);
@@ -93,27 +95,70 @@ void readline(char* prompt,char* command) {
 		ch=getchar();
 		if(!ch) break;
 		switch(ch) {
+			case '\x1b':
+parse_esc:
+				ch=getchar();
+				switch(ch) {
+					case '[':
+						goto parse_esc;
+					case 'C':
+move_right:
+						if(idx<curlen) {
+							idx++;
+							printf("\x1b[C");
+						}
+						break;
+					case 'D':
+move_left:
+						if(idx>0) {
+							idx--;
+							printf("\x1b[D");
+						}
+						break;
+				}
+				break;
 			case 'A'-'@':
-				printf("\x1b""7\rC-a\x1b""8");
+				printf("\r\x1b[%zuC",prompt_len);
+				idx=0;
+				break;
+			case 'E'-'@':
+				printf("\r\x1b[%zuC",prompt_len+curlen);
+				idx=curlen;
 				break;
 			case 'D'-'@':
 				// FIXME very hacky way of quitting :)
-				if(idx==0) {
+				if(curlen==0) {
 					sprintf(command,"exit");
-					idx=4;
+					curlen=4;
 					ch='\n';
 				}
 				break;
+			case 'C'-'@':
+				// TODO actually passthrough C-c, by default it sends SIGINT :/
+				printf("\r%*c\r%s",(int)(prompt_len+curlen),' ',prompt);
+				curlen=0;
+				break;
+			case 'F'-'@':
+				goto move_right;
+			case 'B'-'@':
+				goto move_left;
 			default:
 				if(ch<' ') continue;
-				printf("%c",ch);
 				if(idx>=MAX_CMD_LEN) continue;
+				if(idx<curlen) {
+					printf("\x1b""7 %s\x1b""8",command+idx);
+					for(size_t i=curlen; i>idx; i--) {
+						command[i]=command[i-1];
+					}
+				}
+				printf("%c",ch);
 				command[idx]=ch;
 				idx++;
+				curlen++;
 		}
 	}
 	printf("\n");
-	if(idx<MAX_CMD_LEN) command[idx]='\0';
+	if(curlen<MAX_CMD_LEN) command[curlen]='\0';
 	tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
 	command[MAX_CMD_LEN-1]='\0';
 }
