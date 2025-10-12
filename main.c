@@ -84,7 +84,7 @@ void readline(char* prompt,char* command) {
 	size_t prompt_len=strlen(prompt);
 	tcgetattr(keys_fd,&initial_state);
 	Termios raw=initial_state;
-	raw.c_lflag&=~(ICANON|ECHO);
+	raw.c_lflag&=~(ISIG|ICANON|ECHO);
 	raw.c_cc[VMIN]=1;
 	raw.c_cc[VTIME]=0;
 	printf("%s",prompt);
@@ -134,7 +134,6 @@ move_left:
 				}
 				break;
 			case 'C'-'@':
-				// TODO actually passthrough C-c, by default it sends SIGINT :/
 				printf("\r%*c\r%s",(int)(prompt_len+curlen),' ',prompt);
 				curlen=0;
 				break;
