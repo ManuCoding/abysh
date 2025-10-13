@@ -8,6 +8,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <termios.h>
+#include <sys/ioctl.h>
+#include <signal.h>
 
 #define MAX_CMD_LEN 4096
 #define VERSION "0.1.0"
@@ -77,11 +79,20 @@ void remove_dir(char* res,char* path) {
 typedef struct termios Termios;
 Termios initial_state={0};
 int keys_fd=0;
+size_t term_width=80;
+
+void getsize(int _sig) {
+	(void)_sig;
+	struct winsize win;
+	ioctl(0,TIOCGWINSZ,&win);
+	term_width=win.ws_col;
+}
 
 void readline(char* prompt,char* command) {
 	size_t idx=0;
 	size_t curlen=0;
-	size_t prompt_len=strlen(prompt);
+	getsize(0);
+	size_t prompt_len=strlen(prompt)%term_width;
 	tcgetattr(keys_fd,&initial_state);
 	Termios raw=initial_state;
 	raw.c_lflag&=~(ISIG|ICANON|ECHO);
@@ -101,6 +112,12 @@ parse_esc:
 				switch(ch) {
 					case '[':
 						goto parse_esc;
+					case 'A':
+						printf("\x1b[A");
+						break;
+					case 'B':
+						printf("\x1b[B");
+						break;
 					case 'C':
 move_right:
 						if(idx<curlen) {
@@ -118,11 +135,13 @@ move_left:
 				}
 				break;
 			case 'A'-'@':
+				if(idx+prompt_len>term_width) printf("\x1b[%zuA",(idx+prompt_len)/term_width);
 				printf("\r\x1b[%zuC",prompt_len);
 				idx=0;
 				break;
 			case 'E'-'@':
-				printf("\r\x1b[%zuC",prompt_len+curlen);
+				if(curlen+prompt_len>term_width) printf("\x1b[%zuB",(curlen+prompt_len)/term_width);
+				printf("\r\x1b[%zuC",(curlen+prompt_len)%term_width);
 				idx=curlen;
 				break;
 			case 'D'-'@':
@@ -164,6 +183,7 @@ move_left:
 				curlen++;
 				if(curlen>=MAX_CMD_LEN) curlen=MAX_CMD_LEN-1;
 				printf("%c",ch);
+				fflush(stdout);
 				command[idx]=ch;
 				idx++;
 		}
@@ -191,6 +211,7 @@ void help(char* program,FILE* fd) {
 }
 
 int main(int argc,char** argv) {
+	signal(SIGWINCH,getsize);
 	char* pname=argv[0];
 	remove_dir(pname,pname);
 	if(strlen(pname)==0 || argc<1) {
