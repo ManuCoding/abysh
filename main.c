@@ -148,21 +148,21 @@ move_left:
 						command[i]=command[i+1];
 					}
 					curlen--;
-					printf("\x1b[D\x1b""7%.*s \x1b""8",(int)(curlen-idx),command+idx);
+					printf("\x1b[D\x1b""7%.*s \x1b""8",(int)(curlen-idx+1),command+idx-1);
 					idx--;
 				}
 				break;
 			default:
 				if(ch<' ') continue;
 				if(idx+1>=MAX_CMD_LEN) continue;
-				curlen++;
-				if(curlen>=MAX_CMD_LEN) curlen=MAX_CMD_LEN-1;
 				if(idx<curlen) {
-					printf("\x1b""7 %.*s\x1b""8",(int)(curlen-idx-1),command+idx);
+					printf("\x1b""7 %.*s\x1b""8",(int)(curlen-idx),command+idx);
 					for(size_t i=curlen; i>idx; i--) {
 						command[i]=command[i-1];
 					}
 				}
+				curlen++;
+				if(curlen>=MAX_CMD_LEN) curlen=MAX_CMD_LEN-1;
 				printf("%c",ch);
 				command[idx]=ch;
 				idx++;
