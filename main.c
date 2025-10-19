@@ -175,9 +175,10 @@ move_left:
 				if(ch<' ') continue;
 				if(idx+1>=MAX_CMD_LEN) continue;
 				if(idx<curlen) {
-					printf("\x1b""7 %.*s\x1b""8",(int)(curlen-idx),command+idx);
+					printf(" %.*s\b",(int)(curlen-idx),command+idx);
 					for(size_t i=curlen; i>idx; i--) {
 						command[i]=command[i-1];
+						printf("\b");
 					}
 				}
 				curlen++;
@@ -190,7 +191,7 @@ move_left:
 		if(curlen<MAX_CMD_LEN) command[curlen]='\0';
 		else curlen--;
 	}
-	printf("\n");
+	for(size_t i=(prompt_len+curlen-idx)/term_width+1; i>0; i--) printf("\r\n");
 	tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
 	command[MAX_CMD_LEN-1]='\0';
 }
