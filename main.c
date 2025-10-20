@@ -106,6 +106,7 @@ void readline(char* prompt,char* command,StrArr history) {
 	unsigned char ch=0;
 	while(ch!='\n') {
 		ch=getchar();
+got_char:
 		if(!ch) break;
 		switch(ch) {
 			case '\x1b':
@@ -165,6 +166,20 @@ move_left:
 							printf("\x1b[D");
 						}
 						break;
+					case '3': // Delete
+						ch=getchar();
+						if(ch!='~') goto got_char;
+delete_char:
+						if(idx<curlen) {
+							for(size_t i=idx; i+1<curlen; i++) {
+								command[i]=command[i+1];
+							}
+							curlen--;
+							printf("\x1b""7%.*s \x1b""8",(int)(curlen-idx),command+idx);
+						}
+						break;
+					default:
+						goto got_char;
 				}
 				break;
 			case 'A'-'@':
@@ -178,12 +193,11 @@ move_left:
 				idx=curlen;
 				break;
 			case 'D'-'@':
+				if(curlen>0) goto delete_char;
 				// FIXME very hacky way of quitting :)
-				if(curlen==0) {
-					sprintf(command,"exit");
-					curlen=4;
-					ch='\n';
-				}
+				sprintf(command,"exit");
+				curlen=4;
+				ch='\n';
 				break;
 			case 'C'-'@':
 				printf("\r%*c\r%s",(int)(prompt_len+curlen),' ',prompt);
