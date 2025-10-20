@@ -116,7 +116,7 @@ parse_esc:
 					case '[':
 						goto parse_esc;
 					case 'A':
-next_hist:
+prev_hist:
 						if(hist_idx>0) {
 							if(edited) {
 								// TODO search backwards through history for a match of current command
@@ -134,7 +134,7 @@ next_hist:
 						}
 						break;
 					case 'B':
-prev_hist:
+next_hist:
 						if(hist_idx<history.len) {
 							if(edited) {
 								// TODO search backwards through history for a match of current command
@@ -219,10 +219,10 @@ delete_char:
 				}
 				break;
 			case 'N'-'@':
-				goto prev_hist;
+				goto next_hist;
 				break;
 			case 'P'-'@':
-				goto next_hist;
+				goto prev_hist;
 				break;
 			default:
 				if(ch<' ') continue;
