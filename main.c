@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define MAX_CMD_LEN 4096
-#define VERSION "0.1.0"
+#define VERSION "0.2.0"
 
 typedef struct {
 	char** items;
@@ -116,8 +116,12 @@ parse_esc:
 					case '[':
 						goto parse_esc;
 					case 'A':
-next_hist:
+prev_hist:
 						if(hist_idx>0) {
+							if(curlen+prompt_len>term_width) {
+								printf("\x1b[%zuB",(curlen-idx+prompt_len)/term_width);
+								for(size_t i=0; i<curlen+prompt_len; i+=term_width) printf("\r\x1b[K\x1b[A");
+							}
 							if(edited) {
 								// TODO search backwards through history for a match of current command
 							}
@@ -125,17 +129,18 @@ next_hist:
 								memcpy(command,history.items[hist_idx],MAX_CMD_LEN);
 								curlen=strlen(command);
 								idx=curlen;
-							} else {
-								curlen=0;
-								idx=0;
 							}
 							edited=false;
-							printf("\r\x1b[K%s%s",prompt,command);
+							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command);
 						}
 						break;
 					case 'B':
-prev_hist:
+next_hist:
 						if(hist_idx<history.len) {
+							if(curlen+prompt_len>term_width) {
+								printf("\x1b[%zuB",(curlen-idx+prompt_len)/term_width);
+								for(size_t i=0; i<curlen+prompt_len; i+=term_width) printf("\r\x1b[K\x1b[A");
+							}
 							if(edited) {
 								// TODO search backwards through history for a match of current command
 							}
@@ -149,21 +154,21 @@ prev_hist:
 								command[0]='\0';
 							}
 							edited=false;
-							printf("\r\x1b[K%s%s",prompt,command);
+							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command);
 						}
 						break;
 					case 'C':
 move_right:
 						if(idx<curlen) {
+							printf("%c",command[idx]);
 							idx++;
-							printf("\x1b[C");
 						}
 						break;
 					case 'D':
 move_left:
 						if(idx>0) {
+							printf("\b");
 							idx--;
-							printf("\x1b[D");
 						}
 						break;
 					case '3': // Delete
@@ -188,7 +193,7 @@ delete_char:
 				idx=0;
 				break;
 			case 'E'-'@':
-				if(curlen+prompt_len>term_width) printf("\x1b[%zuB",(curlen+prompt_len)/term_width);
+				if(curlen+prompt_len>term_width) printf("\x1b[%zuB",(curlen-idx+prompt_len)/term_width);
 				printf("\r\x1b[%zuC",(curlen+prompt_len)%term_width);
 				idx=curlen;
 				break;
@@ -218,11 +223,17 @@ delete_char:
 					idx--;
 				}
 				break;
+			case 'L'-'@':
+				printf("\x1b[H\x1b[2J%s%*s",prompt,(int)curlen,command);
+				for(size_t i=curlen; i>idx; i--) {
+					printf("\b");
+				}
+				break;
 			case 'N'-'@':
-				goto prev_hist;
+				goto next_hist;
 				break;
 			case 'P'-'@':
-				goto next_hist;
+				goto prev_hist;
 				break;
 			default:
 				if(ch<' ') continue;
