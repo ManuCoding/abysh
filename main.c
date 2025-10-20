@@ -188,7 +188,7 @@ delete_char:
 				idx=0;
 				break;
 			case 'E'-'@':
-				if(curlen+prompt_len>term_width) printf("\x1b[%zuB",(curlen+prompt_len)/term_width);
+				if(curlen+prompt_len>term_width) printf("\x1b[%zuB",(curlen-idx+prompt_len)/term_width);
 				printf("\r\x1b[%zuC",(curlen+prompt_len)%term_width);
 				idx=curlen;
 				break;
