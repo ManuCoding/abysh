@@ -351,6 +351,7 @@ int main(int argc,char** argv) {
 	StrArr tmpvars={0};
 	while(1) {
 		getcwd(cwd,PATH_MAX);
+		setenv("PWD",cwd,1);
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
@@ -376,7 +377,10 @@ int main(int argc,char** argv) {
 				int res=chdir(newdir);
 				if(res<0) {
 					fprintf(stderr,"%s: cd %s: %s\n",pname,newdir,strerror(errno));
+					continue;
 				}
+				getcwd(cwd,PATH_MAX);
+				setenv("PWD",cwd,1);
 				continue;
 			}
 			if(strcmp(cmd.items[0],"version")==0) {
