@@ -88,9 +88,11 @@ void getsize(int _sig) {
 	term_width=win.ws_col;
 }
 
-void readline(char* prompt,char* command) {
+void readline(char* prompt,char* command,StrArr history) {
 	size_t idx=0;
 	size_t curlen=0;
+	size_t hist_idx=history.len;
+	bool edited=false;
 	getsize(0);
 	size_t prompt_len=strlen(prompt)%term_width;
 	tcgetattr(keys_fd,&initial_state);
@@ -113,10 +115,41 @@ parse_esc:
 					case '[':
 						goto parse_esc;
 					case 'A':
-						printf("\x1b[A");
+next_hist:
+						if(hist_idx>0) {
+							if(edited) {
+								// TODO search backwards through history for a match of current command
+							}
+							if(history.items[--hist_idx]) {
+								memcpy(command,history.items[hist_idx],MAX_CMD_LEN);
+								curlen=strlen(command);
+								idx=curlen;
+							} else {
+								curlen=0;
+								idx=0;
+							}
+							edited=false;
+							printf("\r\x1b[K%s%s",prompt,command);
+						}
 						break;
 					case 'B':
-						printf("\x1b[B");
+prev_hist:
+						if(hist_idx<history.len) {
+							if(edited) {
+								// TODO search backwards through history for a match of current command
+							}
+							if(history.items[++hist_idx]) {
+								memcpy(command,history.items[hist_idx],MAX_CMD_LEN);
+								curlen=strlen(command);
+								idx=curlen;
+							} else {
+								curlen=0;
+								idx=0;
+								command[0]='\0';
+							}
+							edited=false;
+							printf("\r\x1b[K%s%s",prompt,command);
+						}
 						break;
 					case 'C':
 move_right:
@@ -171,6 +204,12 @@ move_left:
 					idx--;
 				}
 				break;
+			case 'N'-'@':
+				goto prev_hist;
+				break;
+			case 'P'-'@':
+				goto next_hist;
+				break;
 			default:
 				if(ch<' ') continue;
 				if(idx+1>=MAX_CMD_LEN) continue;
@@ -186,6 +225,7 @@ move_left:
 				printf("%c",ch);
 				fflush(stdout);
 				command[idx]=ch;
+				edited=true;
 				idx++;
 		}
 		if(curlen<MAX_CMD_LEN) command[curlen]='\0';
@@ -194,6 +234,23 @@ move_left:
 	for(size_t i=(prompt_len+curlen-idx)/term_width+1; i>0; i--) printf("\r\n");
 	tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
 	command[MAX_CMD_LEN-1]='\0';
+}
+
+void add_history(StrArr cmd,StrArr* history) {
+	if(cmd.len==0) return;
+	char command[MAX_CMD_LEN];
+	sprintf(command,"%s",cmd.items[0]);
+	size_t tlen=strlen(cmd.items[0]);
+	for(size_t i=1; i<cmd.len; i++) {
+		size_t arglen=strlen(cmd.items[i]);
+		if(arglen==0) continue;
+		sprintf(command+tlen," %s",cmd.items[i]);
+		tlen+=arglen+1;
+	}
+	if(history->len>0 && strcmp(command,history->items[history->len-1])==0) return;
+	char* copy=malloc(MAX_CMD_LEN);
+	memcpy(copy,command,strlen(command));
+	da_append(history,copy);
 }
 
 void version(char* program,FILE* fd) {
@@ -219,6 +276,7 @@ int main(int argc,char** argv) {
 		pname="(abysh)";
 		fprintf(stderr,"%s: Warning: weird environment\n",pname);
 	}
+	StrArr history={0};
 	char command[MAX_CMD_LEN];
 	char cwd[PATH_MAX];
 	char promptpath[PATH_MAX];
@@ -229,10 +287,11 @@ int main(int argc,char** argv) {
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
-		readline(prompt,command);
+		readline(prompt,command,history);
 		memset(&cmd,0,sizeof(cmd));
 		parse_args(&cmd,command);
 		if(cmd.len) {
+			add_history(cmd,&history);
 			if(strcmp(cmd.items[0],"exit")==0) return 0;
 			if(strcmp(cmd.items[0],"hax")==0) {
 				printf("breaking your code >:)\n");
