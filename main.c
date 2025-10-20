@@ -50,10 +50,19 @@ size_t trim(char** str) {
 	return len;
 }
 
-void parse_args(StrArr* cmd,char* command) {
+void parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
 	size_t len=trim(&command);
 	size_t tlen=0;
 	for(size_t i=0; i<len; i++) {
+		if(command[i]=='=') {
+			if(tlen) {
+				for(; i<len && !isspace(command[i]); i++) tlen++;
+				command[i]='\0';
+				da_append(tmpvars,command+i-tlen);
+				tlen=0;
+				continue;
+			}
+		}
 		if(isspace(command[i])) {
 			if(tlen) {
 				command[i]='\0';
@@ -65,6 +74,37 @@ void parse_args(StrArr* cmd,char* command) {
 		}
 	}
 	if(tlen) da_append(cmd,command+len-tlen);
+}
+
+void expand_path(StrArr cmd,char* cwd,char* pathenv,char* pathbuf) {
+	if(cmd.len) {
+		size_t len=strlen(cmd.items[0]);
+		size_t tlen=0;
+		for(size_t i=0; i<len; i++) {
+			if(cmd.items[0][i]=='/') {
+				if(i==0) { // Absolute path
+					snprintf(pathbuf,PATH_MAX,"%s",cmd.items[0]);
+					pathbuf[PATH_MAX-1]='\0';
+					return;
+				}
+				snprintf(pathbuf,PATH_MAX,"%s/%s",cwd,cmd.items[0]);
+				pathbuf[PATH_MAX-1]='\0';
+				return;
+			}
+		}
+		len=strlen(pathenv);
+		for(size_t i=0; i<=len; i++) {
+			if(pathenv[i]==':' || i==len) {
+				snprintf(pathbuf,PATH_MAX,"%.*s/%s",(int)tlen,pathenv+i-tlen,cmd.items[0]);
+				pathbuf[PATH_MAX-1]='\0';
+				if(access(pathbuf,X_OK)==0) return;
+				tlen=0;
+				continue;
+			}
+			tlen++;
+		}
+		pathbuf[0]='\0';
+	}
 }
 
 void remove_dir(char* res,char* path) {
@@ -259,8 +299,14 @@ void expand_env(StrArr* cmd) {
 		// TODO expand variables when they're substrings of arguments
 		if(cmd->items[i][0]=='$') {
 			char* var=getenv(cmd->items[i]+1);
-			if(var) cmd->items[i]=var;
-			else cmd->items[i]="";
+			if(var) {
+				cmd->items[i]=var;
+			} else {
+				for(size_t j=i+1; j<cmd->len; j++) {
+					cmd->items[j-1]=cmd->items[j];
+				}
+				cmd->len--;
+			}
 		}
 	}
 }
@@ -284,10 +330,13 @@ int main(int argc,char** argv) {
 	signal(SIGWINCH,getsize);
 	char* pname=argv[0];
 	char* homedir=getenv("HOME");
+	char* pathenv=getenv("PATH");
+	char pathbuf[PATH_MAX];
 	if(homedir==NULL) {
 		homedir=malloc(MAX_CMD_LEN);
 		sprintf(homedir,"/home/%s",getpwuid(getuid())->pw_name);
 	}
+	if(pathenv==NULL) pathenv="/usr/local/sbin:/usr/local/bin:/usr/bin";
 	remove_dir(pname,pname);
 	if(strlen(pname)==0 || argc<1) {
 		pname="(abysh)";
@@ -299,6 +348,7 @@ int main(int argc,char** argv) {
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
 	StrArr cmd={0};
+	StrArr tmpvars={0};
 	while(1) {
 		getcwd(cwd,PATH_MAX);
 		remove_dir(promptpath,cwd);
@@ -306,7 +356,8 @@ int main(int argc,char** argv) {
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
 		readline(prompt,command,history);
 		memset(&cmd,0,sizeof(cmd));
-		parse_args(&cmd,command);
+		memset(&tmpvars,0,sizeof(tmpvars));
+		parse_args(&cmd,&tmpvars,command);
 		if(cmd.len) {
 			add_history(cmd,&history);
 			expand_env(&cmd);
@@ -337,9 +388,15 @@ int main(int argc,char** argv) {
 				continue;
 			}
 			da_append(&cmd,NULL);
+			if(tmpvars.len>0) da_append(&tmpvars,NULL);
 			pid_t pid=fork();
 			if(pid==0) {
-				int res=execvp(cmd.items[0],cmd.items);
+				int res=0;
+				expand_path(cmd,cwd,pathenv,pathbuf);
+				if(tmpvars.len>0)
+					res=execve(pathbuf,cmd.items,tmpvars.items);
+				else
+					res=execv(pathbuf,cmd.items);
 				if(res<0) {
 					fprintf(stderr,"Unknown command: %s\n",cmd.items[0]);
 					return 127;
@@ -350,6 +407,24 @@ int main(int argc,char** argv) {
 				int status;
 				waitpid(pid,&status,0);
 				printf("ret: %d\n",WEXITSTATUS(status));
+			}
+		} else if(tmpvars.len) {
+			for(size_t i=0; i<tmpvars.len; i++) {
+				size_t tlen=0;
+				size_t arglen=strlen(tmpvars.items[i]);
+				for(size_t j=0; j<arglen; j++) {
+					if(tmpvars.items[i][j]=='=') {
+						tmpvars.items[i][j]='\0';
+						break;
+					}
+					tlen++;
+				}
+				if(tlen==0) continue;
+				if(tlen+1<arglen) {
+					setenv(tmpvars.items[i],tmpvars.items[i]+tlen+1,1);
+				} else {
+					unsetenv(tmpvars.items[i]);
+				}
 			}
 		}
 	}
