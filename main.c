@@ -118,6 +118,10 @@ parse_esc:
 					case 'A':
 prev_hist:
 						if(hist_idx>0) {
+							if(curlen+prompt_len>term_width) {
+								printf("\x1b[%zuB",(curlen-idx+prompt_len)/term_width);
+								for(size_t i=0; i<curlen+prompt_len; i+=term_width) printf("\r\x1b[K\x1b[A");
+							}
 							if(edited) {
 								// TODO search backwards through history for a match of current command
 							}
@@ -125,17 +129,18 @@ prev_hist:
 								memcpy(command,history.items[hist_idx],MAX_CMD_LEN);
 								curlen=strlen(command);
 								idx=curlen;
-							} else {
-								curlen=0;
-								idx=0;
 							}
 							edited=false;
-							printf("\r\x1b[K%s%s",prompt,command);
+							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command);
 						}
 						break;
 					case 'B':
 next_hist:
 						if(hist_idx<history.len) {
+							if(curlen+prompt_len>term_width) {
+								printf("\x1b[%zuB",(curlen-idx+prompt_len)/term_width);
+								for(size_t i=0; i<curlen+prompt_len; i+=term_width) printf("\r\x1b[K\x1b[A");
+							}
 							if(edited) {
 								// TODO search backwards through history for a match of current command
 							}
@@ -149,7 +154,7 @@ next_hist:
 								command[0]='\0';
 							}
 							edited=false;
-							printf("\r\x1b[K%s%s",prompt,command);
+							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command);
 						}
 						break;
 					case 'C':
@@ -216,6 +221,12 @@ delete_char:
 					curlen--;
 					printf("\x1b[D\x1b""7%.*s \x1b""8",(int)(curlen-idx+1),command+idx-1);
 					idx--;
+				}
+				break;
+			case 'L'-'@':
+				printf("\x1b[H\x1b[2J%s%*s",prompt,(int)curlen,command);
+				for(size_t i=curlen; i>idx; i--) {
+					printf("\b");
 				}
 				break;
 			case 'N'-'@':
