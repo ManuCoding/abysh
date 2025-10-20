@@ -1,6 +1,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -271,6 +272,11 @@ void help(char* program,FILE* fd) {
 int main(int argc,char** argv) {
 	signal(SIGWINCH,getsize);
 	char* pname=argv[0];
+	char* homedir=getenv("HOME");
+	if(homedir==NULL) {
+		homedir=malloc(MAX_CMD_LEN);
+		sprintf(homedir,"/home/%s",getpwuid(getuid())->pw_name);
+	}
 	remove_dir(pname,pname);
 	if(strlen(pname)==0 || argc<1) {
 		pname="(abysh)";
@@ -300,7 +306,7 @@ int main(int argc,char** argv) {
 			if(strcmp(cmd.items[0],"cd")==0) {
 				char* newdir;
 				if(cmd.len==1) {
-					newdir=getenv("HOME");
+					newdir=homedir;
 				} else {
 					newdir=cmd.items[1];
 				}
