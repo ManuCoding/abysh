@@ -254,6 +254,17 @@ void add_history(StrArr cmd,StrArr* history) {
 	da_append(history,copy);
 }
 
+void expand_env(StrArr* cmd) {
+	for(size_t i=0; i<cmd->len; i++) {
+		// TODO expand variables when they're substrings of arguments
+		if(cmd->items[i][0]=='$') {
+			char* var=getenv(cmd->items[i]+1);
+			if(var) cmd->items[i]=var;
+			else cmd->items[i]="";
+		}
+	}
+}
+
 void version(char* program,FILE* fd) {
 	fprintf(fd,"%s (Abyss Shell) version %s\n",program,VERSION);
 }
@@ -298,6 +309,7 @@ int main(int argc,char** argv) {
 		parse_args(&cmd,command);
 		if(cmd.len) {
 			add_history(cmd,&history);
+			expand_env(&cmd);
 			if(strcmp(cmd.items[0],"exit")==0) return 0;
 			if(strcmp(cmd.items[0],"hax")==0) {
 				printf("breaking your code >:)\n");
