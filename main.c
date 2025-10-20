@@ -1,15 +1,15 @@
-#include <stdbool.h>
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <termios.h>
 #include <sys/ioctl.h>
-#include <signal.h>
+#include <sys/wait.h>
+#include <termios.h>
+#include <unistd.h>
 
 #define MAX_CMD_LEN 4096
 #define VERSION "0.1.0"
