@@ -155,15 +155,15 @@ prev_hist:
 					case 'C':
 move_right:
 						if(idx<curlen) {
+							printf("%c",command[idx]);
 							idx++;
-							printf("\x1b[C");
 						}
 						break;
 					case 'D':
 move_left:
 						if(idx>0) {
+							printf("\b");
 							idx--;
-							printf("\x1b[D");
 						}
 						break;
 					case '3': // Delete
