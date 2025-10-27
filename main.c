@@ -467,12 +467,16 @@ int main(int argc,char** argv,char** envp) {
 	char prompt[PATH_MAX*2];
 	StrArr cmd={0};
 	StrArr tmpvars={0};
+	int status=0;
 	while(1) {
 		getcwd(cwd,PATH_MAX);
 		envedit(pname,&env,"PWD",cwd);
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
+		if(WEXITSTATUS(status)>0) {
+			sprintf(prompt+strlen(pname)+strlen(promptpath)+2,"[%d] > ",WEXITSTATUS(status));
+		}
 		readline(prompt,command,history);
 		memset(&cmd,0,sizeof(cmd));
 		memset(&tmpvars,0,sizeof(tmpvars));
@@ -528,9 +532,7 @@ int main(int argc,char** argv,char** envp) {
 				fprintf(stderr,"%s: internal error\n",pname);
 				return 1;
 			} else {
-				int status;
 				waitpid(pid,&status,0);
-				printf("ret: %d\n",WEXITSTATUS(status));
 				env.len=env_len;
 			}
 		} else if(tmpvars.len) {
