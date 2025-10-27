@@ -125,6 +125,7 @@ size_t term_width=80;
 // 8MB should be enough for everyone
 #define ENVPOOL_SIZE (8*1024*1024)
 char envpool[ENVPOOL_SIZE];
+char retbuf[1024];
 
 void getsize(int _sig) {
 	(void)_sig;
@@ -400,6 +401,10 @@ void expand_env(StrArr env,StrArr* cmd) {
 	for(size_t i=0; i<cmd->len; i++) {
 		// TODO expand variables when they're substrings of arguments
 		if(cmd->items[i][0]=='$') {
+			if(strcmp(cmd->items[i],"$?")==0) {
+				cmd->items[i]=retbuf;
+				continue;
+			}
 			char* var=envget(env,cmd->items[i]+1);
 			if(var) {
 				cmd->items[i]=var;
@@ -474,8 +479,9 @@ int main(int argc,char** argv,char** envp) {
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
+		sprintf(retbuf,"%d",WEXITSTATUS(status));
 		if(WEXITSTATUS(status)>0) {
-			sprintf(prompt+strlen(pname)+strlen(promptpath)+2,"[%d] > ",WEXITSTATUS(status));
+			sprintf(prompt+strlen(pname)+strlen(promptpath)+2,"[%s] > ",retbuf);
 		}
 		readline(prompt,command,history);
 		memset(&cmd,0,sizeof(cmd));
@@ -499,8 +505,10 @@ int main(int argc,char** argv,char** envp) {
 				int res=chdir(newdir);
 				if(res<0) {
 					fprintf(stderr,"%s: cd %s: %s\n",pname,newdir,strerror(errno));
+					status=256;
 					continue;
 				}
+				status=0;
 				getcwd(cwd,PATH_MAX);
 				envedit(pname,&env,"PWD",cwd);
 				continue;
