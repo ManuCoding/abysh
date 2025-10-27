@@ -410,19 +410,31 @@ int main(int argc,char** argv,char** envp) {
 	char* pathenv=getenv("PATH");
 	char pathbuf[PATH_MAX];
 	if(homedir==NULL) {
-		homedir=malloc(MAX_CMD_LEN);
+		homedir=malloc(PATH_MAX);
 		sprintf(homedir,"/home/%s",getpwuid(getuid())->pw_name);
 	}
 	if(pathenv==NULL) pathenv="/usr/local/sbin:/usr/local/bin:/usr/bin";
 	remove_dir(pname,pname);
 	if(strlen(pname)==0 || argc<1) {
 		pname="(abysh)";
-		fprintf(stderr,"%s: Warning: weird environment\n",pname);
+		fprintf(stderr,"%s: warning: weird environment\n",pname);
 	}
 	StrArr env={0};
 	for(;*envp;envp++) {
 		da_append(&env,*envp);
 	}
+	char* shlvlenv=envget(env,"SHLVL");
+	if(shlvlenv==NULL) shlvlenv="";
+	int shlvl=atoi(shlvlenv);
+	if(shlvl<0) shlvl=0;
+	if(shlvl>=999) {
+		fprintf(stderr,"%s: warning: shell level (%d) is too high, resetting to 1\n",pname,shlvl);
+		shlvl=0;
+	}
+	shlvl++;
+	char shlvlbuf[10];
+	sprintf(shlvlbuf,"%d",shlvl);
+	envedit(pname,&env,"SHLVL",shlvlbuf);
 	StrArr history={0};
 	char command[MAX_CMD_LEN];
 	char cwd[PATH_MAX];
