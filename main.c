@@ -189,7 +189,7 @@ next_hist:
 							if(edited) {
 								// TODO search backwards through history for a match of current command
 							}
-							if(history.items[++hist_idx]) {
+							if(++hist_idx<history.len && history.items[hist_idx]) {
 								memcpy(command,history.items[hist_idx],MAX_CMD_LEN);
 								curlen=strlen(command);
 								idx=curlen;
