@@ -1,8 +1,10 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +14,7 @@
 #include <unistd.h>
 
 #define MAX_CMD_LEN 4096
-#define VERSION "0.2.0"
+#define VERSION "0.3.0"
 
 typedef struct {
 	char** items;
@@ -49,10 +51,19 @@ size_t trim(char** str) {
 	return len;
 }
 
-void parse_args(StrArr* cmd,char* command) {
+void parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
 	size_t len=trim(&command);
 	size_t tlen=0;
 	for(size_t i=0; i<len; i++) {
+		if(command[i]=='=') {
+			if(tlen) {
+				for(; i<len && !isspace(command[i]); i++) tlen++;
+				command[i]='\0';
+				da_append(tmpvars,command+i-tlen);
+				tlen=0;
+				continue;
+			}
+		}
 		if(isspace(command[i])) {
 			if(tlen) {
 				command[i]='\0';
@@ -64,6 +75,37 @@ void parse_args(StrArr* cmd,char* command) {
 		}
 	}
 	if(tlen) da_append(cmd,command+len-tlen);
+}
+
+void expand_path(StrArr cmd,char* cwd,char* pathenv,char* pathbuf) {
+	if(cmd.len) {
+		size_t len=strlen(cmd.items[0]);
+		size_t tlen=0;
+		for(size_t i=0; i<len; i++) {
+			if(cmd.items[0][i]=='/') {
+				if(i==0) { // Absolute path
+					snprintf(pathbuf,PATH_MAX,"%s",cmd.items[0]);
+					pathbuf[PATH_MAX-1]='\0';
+					return;
+				}
+				snprintf(pathbuf,PATH_MAX,"%s/%s",cwd,cmd.items[0]);
+				pathbuf[PATH_MAX-1]='\0';
+				return;
+			}
+		}
+		len=strlen(pathenv);
+		for(size_t i=0; i<=len; i++) {
+			if(pathenv[i]==':' || i==len) {
+				snprintf(pathbuf,PATH_MAX,"%.*s/%s",(int)tlen,pathenv+i-tlen,cmd.items[0]);
+				pathbuf[PATH_MAX-1]='\0';
+				if(access(pathbuf,X_OK)==0) return;
+				tlen=0;
+				continue;
+			}
+			tlen++;
+		}
+		pathbuf[0]='\0';
+	}
 }
 
 void remove_dir(char* res,char* path) {
@@ -80,6 +122,9 @@ typedef struct termios Termios;
 Termios initial_state={0};
 int keys_fd=0;
 size_t term_width=80;
+// 8MB should be enough for everyone
+#define ENVPOOL_SIZE (8*1024*1024)
+char envpool[ENVPOOL_SIZE];
 
 void getsize(int _sig) {
 	(void)_sig;
@@ -261,21 +306,111 @@ delete_char:
 	command[MAX_CMD_LEN-1]='\0';
 }
 
-void add_history(StrArr cmd,StrArr* history) {
-	if(cmd.len==0) return;
+void add_history(StrArr cmd,StrArr tmpvars,StrArr* history) {
 	char command[MAX_CMD_LEN];
-	sprintf(command,"%s",cmd.items[0]);
-	size_t tlen=strlen(cmd.items[0]);
-	for(size_t i=1; i<cmd.len; i++) {
-		size_t arglen=strlen(cmd.items[i]);
-		if(arglen==0) continue;
-		sprintf(command+tlen," %s",cmd.items[i]);
-		tlen+=arglen+1;
+	size_t tlen=0;
+	if(tmpvars.len>0) {
+		for(size_t i=0; i<tmpvars.len; i++) {
+			size_t varlen=strlen(tmpvars.items[i]);
+			sprintf(command+tlen,"%s ",tmpvars.items[i]);
+			tlen+=varlen+1;
+		}
+		if(cmd.len==0) tlen--;
 	}
+	if(cmd.len>0) {
+		sprintf(command+tlen,"%s",cmd.items[0]);
+		tlen+=strlen(cmd.items[0]);
+		for(size_t i=1; i<cmd.len; i++) {
+			size_t arglen=strlen(cmd.items[i]);
+			if(arglen==0) continue;
+			sprintf(command+tlen," %s",cmd.items[i]);
+			tlen+=arglen+1;
+		}
+	}
+	if(tlen<MAX_CMD_LEN) command[tlen]='\0';
 	if(history->len>0 && strcmp(command,history->items[history->len-1])==0) return;
 	char* copy=malloc(MAX_CMD_LEN);
 	memcpy(copy,command,strlen(command));
 	da_append(history,copy);
+}
+
+char* envget(StrArr env,char* var) {
+	if(var==NULL) return NULL;
+	size_t varlen=strlen(var);
+	for(size_t i=0; i<env.len; i++) {
+		if(strncmp(env.items[i],var,varlen)==0) {
+			if(env.items[i][varlen]=='=') return env.items[i]+varlen+1;
+		}
+	}
+	return NULL;
+}
+
+void envedit(char* pname,StrArr* env,char* var,char* val) {
+	if(var==NULL) return;
+	size_t varlen=strlen(var);
+	for(size_t i=0; i<env->len; i++) {
+		if(strncmp(env->items[i],var,varlen)==0 && env->items[i][varlen]=='=') {
+			char* varat=env->items[i]-1;
+			env->items[i]=env->items[env->len-1];
+			env->len--;
+			if(*(uint8_t*)varat==255) {
+				size_t curlen=strlen(varat+3)+3;
+				for(size_t i=0; i<curlen; i+=256) {
+					*(char*)(varat+i)=0;
+				}
+			}
+			*varat=0;
+			break;
+		}
+	}
+	if(val==NULL || val[0]=='\0') return;
+	size_t totallen=varlen+strlen(val)+2;
+	if(totallen<255) {
+		size_t idx=0;
+		while(idx<ENVPOOL_SIZE && envpool[idx]) idx+=256;
+		if(idx>=ENVPOOL_SIZE) {
+			fprintf(stderr,"%s: could not set '%s': out of memory\n",pname,var);
+			return;
+		}
+		envpool[idx]=totallen;
+		sprintf(envpool+idx+1,"%s=%s",var,val);
+		da_append(env,&envpool[idx+1]);
+		return;
+	}
+	size_t idx=0;
+	size_t idx2=0;
+	if(totallen%256==255) totallen+=256;
+find_big_slot:
+	while(idx<ENVPOOL_SIZE && envpool[idx]) idx+=256;
+	for(idx2=idx; idx2<ENVPOOL_SIZE && idx2-idx<=totallen; idx2+=256) {
+		if(envpool[idx2]) goto find_big_slot;
+	}
+	if(idx2>=ENVPOOL_SIZE) {
+		fprintf(stderr,"%s: could not set '%s': out of memory\n",pname,var);
+		return;
+	}
+	envpool[idx]=255;
+	if(totallen%256==255) envpool[++idx]=1;
+	envpool[++idx]=0;
+	sprintf(envpool+idx,"%s=%s",var,val);
+	da_append(env,&envpool[idx]);
+}
+
+void expand_env(StrArr env,StrArr* cmd) {
+	for(size_t i=0; i<cmd->len; i++) {
+		// TODO expand variables when they're substrings of arguments
+		if(cmd->items[i][0]=='$') {
+			char* var=envget(env,cmd->items[i]+1);
+			if(var) {
+				cmd->items[i]=var;
+			} else {
+				for(size_t j=i+1; j<cmd->len; j++) {
+					cmd->items[j-1]=cmd->items[j];
+				}
+				cmd->len--;
+			}
+		}
+	}
 }
 
 void version(char* program,FILE* fd) {
@@ -293,30 +428,58 @@ void help(char* program,FILE* fd) {
 	fprintf(fd,"    help           Print this help\n");
 }
 
-int main(int argc,char** argv) {
+int main(int argc,char** argv,char** envp) {
 	signal(SIGWINCH,getsize);
 	char* pname=argv[0];
+	char* homedir=getenv("HOME");
+	char* pathenv=getenv("PATH");
+	char pathbuf[PATH_MAX];
+	if(homedir==NULL) {
+		homedir=malloc(PATH_MAX);
+		sprintf(homedir,"/home/%s",getpwuid(getuid())->pw_name);
+	}
+	if(pathenv==NULL) pathenv="/usr/local/sbin:/usr/local/bin:/usr/bin";
 	remove_dir(pname,pname);
 	if(strlen(pname)==0 || argc<1) {
 		pname="(abysh)";
-		fprintf(stderr,"%s: Warning: weird environment\n",pname);
+		fprintf(stderr,"%s: warning: weird environment\n",pname);
 	}
+	StrArr env={0};
+	for(;*envp;envp++) {
+		da_append(&env,*envp);
+	}
+	char* shlvlenv=envget(env,"SHLVL");
+	if(shlvlenv==NULL) shlvlenv="";
+	int shlvl=atoi(shlvlenv);
+	if(shlvl<0) shlvl=0;
+	if(shlvl>=999) {
+		fprintf(stderr,"%s: warning: shell level (%d) is too high, resetting to 1\n",pname,shlvl);
+		shlvl=0;
+	}
+	shlvl++;
+	char shlvlbuf[10];
+	sprintf(shlvlbuf,"%d",shlvl);
+	envedit(pname,&env,"SHLVL",shlvlbuf);
 	StrArr history={0};
 	char command[MAX_CMD_LEN];
 	char cwd[PATH_MAX];
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
 	StrArr cmd={0};
+	StrArr tmpvars={0};
 	while(1) {
 		getcwd(cwd,PATH_MAX);
+		envedit(pname,&env,"PWD",cwd);
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
 		readline(prompt,command,history);
 		memset(&cmd,0,sizeof(cmd));
-		parse_args(&cmd,command);
+		memset(&tmpvars,0,sizeof(tmpvars));
+		parse_args(&cmd,&tmpvars,command);
+		add_history(cmd,tmpvars,&history);
 		if(cmd.len) {
-			add_history(cmd,&history);
+			expand_env(env,&cmd);
 			if(strcmp(cmd.items[0],"exit")==0) return 0;
 			if(strcmp(cmd.items[0],"hax")==0) {
 				printf("breaking your code >:)\n");
@@ -325,14 +488,17 @@ int main(int argc,char** argv) {
 			if(strcmp(cmd.items[0],"cd")==0) {
 				char* newdir;
 				if(cmd.len==1) {
-					newdir=getenv("HOME");
+					newdir=homedir;
 				} else {
 					newdir=cmd.items[1];
 				}
 				int res=chdir(newdir);
 				if(res<0) {
 					fprintf(stderr,"%s: cd %s: %s\n",pname,newdir,strerror(errno));
+					continue;
 				}
+				getcwd(cwd,PATH_MAX);
+				envedit(pname,&env,"PWD",cwd);
 				continue;
 			}
 			if(strcmp(cmd.items[0],"version")==0) {
@@ -344,9 +510,17 @@ int main(int argc,char** argv) {
 				continue;
 			}
 			da_append(&cmd,NULL);
+			expand_path(cmd,cwd,pathenv,pathbuf);
+			envedit(pname,&env,"_",pathbuf);
+			size_t env_len=env.len;
+			for(size_t i=0; i<tmpvars.len; i++) {
+				da_append(&env,tmpvars.items[i]);
+			}
+			da_append(&env,NULL);
 			pid_t pid=fork();
 			if(pid==0) {
-				int res=execvp(cmd.items[0],cmd.items);
+				int res=0;
+				res=execve(pathbuf,cmd.items,env.items);
 				if(res<0) {
 					fprintf(stderr,"Unknown command: %s\n",cmd.items[0]);
 					return 127;
@@ -357,6 +531,25 @@ int main(int argc,char** argv) {
 				int status;
 				waitpid(pid,&status,0);
 				printf("ret: %d\n",WEXITSTATUS(status));
+				env.len=env_len;
+			}
+		} else if(tmpvars.len) {
+			for(size_t i=0; i<tmpvars.len; i++) {
+				size_t tlen=0;
+				size_t arglen=strlen(tmpvars.items[i]);
+				for(size_t j=0; j<arglen; j++) {
+					if(tmpvars.items[i][j]=='=') {
+						tmpvars.items[i][j]='\0';
+						break;
+					}
+					tlen++;
+				}
+				if(tlen==0) continue;
+				if(tlen+1<arglen) {
+					envedit(pname,&env,tmpvars.items[i],tmpvars.items[i]+tlen+1);
+				} else {
+					envedit(pname,&env,tmpvars.items[i],NULL);
+				}
 			}
 		}
 	}
