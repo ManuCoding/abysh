@@ -38,6 +38,15 @@ typedef struct {
 		(arr)->items[(arr)->len++]=item;                            \
 	} while(0)
 
+typedef struct termios Termios;
+Termios initial_state={0};
+int keys_fd=0;
+size_t term_width=80;
+char* pname;
+// 8MB should be enough for everyone
+#define ENVPOOL_SIZE (8*1024*1024)
+char envpool[ENVPOOL_SIZE];
+
 size_t trim(char** str) {
 	size_t len=strnlen(*str,MAX_CMD_LEN);
 	while(len && isspace((*str)[len-1])) {
@@ -51,7 +60,32 @@ size_t trim(char** str) {
 	return len;
 }
 
-void parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
+bool parse_string(char* command,size_t* len,size_t* idx) {
+	if(*idx>=*len) return false;
+	if(command[*idx]!='"') return false;
+	for((*idx)++; *idx<*len; (*idx)++) {
+		if(command[*idx]=='"') {
+			for(size_t i=*idx; i+1<*len; i++) {
+				command[i]=command[i+1];
+			}
+			command[--*len]='\0';
+			return true;
+		}
+		if(command[*idx]=='\\') {
+			if(*idx+1<*len) {
+				for(size_t i=*idx; i+1<*len; i++) {
+					command[i]=command[i+1];
+				}
+				command[--*len]='\0';
+				continue;
+			}
+			return false;
+		}
+	}
+	return false;
+}
+
+bool parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
 	size_t len=trim(&command);
 	size_t tlen=0;
 	for(size_t i=0; i<len; i++) {
@@ -70,11 +104,19 @@ void parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
 				da_append(cmd,command+i-tlen);
 				tlen=0;
 			}
+		} else if(command[i]=='"') {
+			size_t idx=i;
+			if(!parse_string(command,&len,&i)) {
+				fprintf(stderr,"%s: unexpected EOF while looking for matching '\"'\n",pname);
+				return false;
+			}
+			tlen+=i-idx;
 		} else {
 			tlen++;
 		}
 	}
 	if(tlen) da_append(cmd,command+len-tlen);
+	return true;
 }
 
 void expand_path(StrArr cmd,char* cwd,char* pathenv,char* pathbuf) {
@@ -117,14 +159,6 @@ void remove_dir(char* res,char* path) {
 	}
 	strcpy(res,shortpath);
 }
-
-typedef struct termios Termios;
-Termios initial_state={0};
-int keys_fd=0;
-size_t term_width=80;
-// 8MB should be enough for everyone
-#define ENVPOOL_SIZE (8*1024*1024)
-char envpool[ENVPOOL_SIZE];
 
 void getsize(int _sig) {
 	(void)_sig;
@@ -345,7 +379,7 @@ char* envget(StrArr env,char* var) {
 	return NULL;
 }
 
-void envedit(char* pname,StrArr* env,char* var,char* val) {
+void envedit(StrArr* env,char* var,char* val) {
 	if(var==NULL) return;
 	size_t varlen=strlen(var);
 	for(size_t i=0; i<env->len; i++) {
@@ -430,7 +464,7 @@ void help(char* program,FILE* fd) {
 
 int main(int argc,char** argv,char** envp) {
 	signal(SIGWINCH,getsize);
-	char* pname=argv[0];
+	pname=argv[0];
 	char* homedir=getenv("HOME");
 	char* pathenv=getenv("PATH");
 	char pathbuf[PATH_MAX];
@@ -459,7 +493,7 @@ int main(int argc,char** argv,char** envp) {
 	shlvl++;
 	char shlvlbuf[10];
 	sprintf(shlvlbuf,"%d",shlvl);
-	envedit(pname,&env,"SHLVL",shlvlbuf);
+	envedit(&env,"SHLVL",shlvlbuf);
 	StrArr history={0};
 	char command[MAX_CMD_LEN];
 	char cwd[PATH_MAX];
@@ -470,7 +504,7 @@ int main(int argc,char** argv,char** envp) {
 	int status=0;
 	while(1) {
 		getcwd(cwd,PATH_MAX);
-		envedit(pname,&env,"PWD",cwd);
+		envedit(&env,"PWD",cwd);
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
@@ -480,7 +514,7 @@ int main(int argc,char** argv,char** envp) {
 		readline(prompt,command,history);
 		memset(&cmd,0,sizeof(cmd));
 		memset(&tmpvars,0,sizeof(tmpvars));
-		parse_args(&cmd,&tmpvars,command);
+		if(!parse_args(&cmd,&tmpvars,command)) continue;
 		add_history(cmd,tmpvars,&history);
 		if(cmd.len) {
 			expand_env(env,&cmd);
@@ -502,7 +536,7 @@ int main(int argc,char** argv,char** envp) {
 					continue;
 				}
 				getcwd(cwd,PATH_MAX);
-				envedit(pname,&env,"PWD",cwd);
+				envedit(&env,"PWD",cwd);
 				continue;
 			}
 			if(strcmp(cmd.items[0],"version")==0) {
@@ -515,7 +549,7 @@ int main(int argc,char** argv,char** envp) {
 			}
 			da_append(&cmd,NULL);
 			expand_path(cmd,cwd,pathenv,pathbuf);
-			envedit(pname,&env,"_",pathbuf);
+			envedit(&env,"_",pathbuf);
 			size_t env_len=env.len;
 			for(size_t i=0; i<tmpvars.len; i++) {
 				da_append(&env,tmpvars.items[i]);
@@ -548,9 +582,9 @@ int main(int argc,char** argv,char** envp) {
 				}
 				if(tlen==0) continue;
 				if(tlen+1<arglen) {
-					envedit(pname,&env,tmpvars.items[i],tmpvars.items[i]+tlen+1);
+					envedit(&env,tmpvars.items[i],tmpvars.items[i]+tlen+1);
 				} else {
-					envedit(pname,&env,tmpvars.items[i],NULL);
+					envedit(&env,tmpvars.items[i],NULL);
 				}
 			}
 		}
