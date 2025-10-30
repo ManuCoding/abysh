@@ -102,7 +102,17 @@ bool parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
 				continue;
 			}
 			if(tlen) {
-				for(; i<len && !isspace(command[i]); i++) tlen++;
+				for(; i<len && !isspace(command[i]); i++) {
+					if(command[i]=='"') {
+						size_t idx=i;
+						if(!parse_string(command,&len,&i)) {
+							fprintf(stderr,"%s: unexpected EOF while looking for matching '\"'\n",pname);
+							return false;
+						}
+						tlen+=i-idx;
+					}
+					tlen++;
+				}
 				command[i]='\0';
 				da_append(tmpvars,command+i-tlen);
 				tlen=0;
