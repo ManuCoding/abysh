@@ -340,28 +340,7 @@ delete_char:
 	command[MAX_CMD_LEN-1]='\0';
 }
 
-void add_history(StrArr cmd,StrArr tmpvars,StrArr* history) {
-	char command[MAX_CMD_LEN];
-	size_t tlen=0;
-	if(tmpvars.len>0) {
-		for(size_t i=0; i<tmpvars.len; i++) {
-			size_t varlen=strlen(tmpvars.items[i]);
-			sprintf(command+tlen,"%s ",tmpvars.items[i]);
-			tlen+=varlen+1;
-		}
-		if(cmd.len==0) tlen--;
-	}
-	if(cmd.len>0) {
-		sprintf(command+tlen,"%s",cmd.items[0]);
-		tlen+=strlen(cmd.items[0]);
-		for(size_t i=1; i<cmd.len; i++) {
-			size_t arglen=strlen(cmd.items[i]);
-			if(arglen==0) continue;
-			sprintf(command+tlen," %s",cmd.items[i]);
-			tlen+=arglen+1;
-		}
-	}
-	if(tlen<MAX_CMD_LEN) command[tlen]='\0';
+void add_history(char* command,StrArr* history) {
 	if(history->len>0 && strcmp(command,history->items[history->len-1])==0) return;
 	char* copy=malloc(MAX_CMD_LEN);
 	memcpy(copy,command,strlen(command));
@@ -514,8 +493,10 @@ int main(int argc,char** argv,char** envp) {
 		readline(prompt,command,history);
 		memset(&cmd,0,sizeof(cmd));
 		memset(&tmpvars,0,sizeof(tmpvars));
-		if(!parse_args(&cmd,&tmpvars,command)) continue;
-		add_history(cmd,tmpvars,&history);
+		char* trimmed=command;
+		trim(&trimmed);
+		add_history(trimmed,&history);
+		if(!parse_args(&cmd,&tmpvars,trimmed)) continue;
 		if(cmd.len) {
 			expand_env(env,&cmd);
 			if(strcmp(cmd.items[0],"exit")==0) return 0;
