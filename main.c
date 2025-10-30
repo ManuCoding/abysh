@@ -63,11 +63,17 @@ size_t trim(char** str) {
 bool parse_string(char* command,size_t* len,size_t* idx) {
 	if(*idx>=*len) return false;
 	if(command[*idx]!='"') return false;
+	size_t startidx=*idx;
 	for((*idx)++; *idx<*len; (*idx)++) {
 		if(command[*idx]=='"') {
-			for(size_t i=*idx; i+1<*len; i++) {
+			for(size_t i=startidx; i+1<*idx; i++) {
 				command[i]=command[i+1];
 			}
+			for(size_t i=(*idx)-1; i+2<*len; i++) {
+				command[i]=command[i+2];
+			}
+			*idx-=2;
+			--*len;
 			command[--*len]='\0';
 			return true;
 		}
@@ -104,15 +110,16 @@ bool parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
 				da_append(cmd,command+i-tlen);
 				tlen=0;
 			}
-		} else if(command[i]=='"') {
+		} else {
+			tlen++;
+		}
+		if(command[i]=='"') {
 			size_t idx=i;
 			if(!parse_string(command,&len,&i)) {
 				fprintf(stderr,"%s: unexpected EOF while looking for matching '\"'\n",pname);
 				return false;
 			}
 			tlen+=i-idx;
-		} else {
-			tlen++;
 		}
 	}
 	if(tlen) da_append(cmd,command+len-tlen);
@@ -442,6 +449,13 @@ void help(char* program,FILE* fd) {
 }
 
 int main(int argc,char** argv,char** envp) {
+	// char foo[1024];
+	// sprintf(foo,"\"woa\\\\h\"z123");
+	// size_t foolen=strlen(foo);
+	// size_t fooidx=0;
+	// parse_string(foo,&foolen,&fooidx);
+	// printf("%s %zu %zu (%.*s)\n",foo,foolen,fooidx,(int)foolen,foo);
+	// return 0;
 	signal(SIGWINCH,getsize);
 	pname=argv[0];
 	char* homedir=getenv("HOME");
