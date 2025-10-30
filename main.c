@@ -24,19 +24,19 @@ typedef struct {
 
 #define DA_INIT_CAP 4
 #define da_append(arr,item)                                         \
-	do {                                                            \
-		if((arr)->len>=(arr)->cap) {                                \
-			if((arr)->cap) (arr)->cap*=2;                           \
-			else (arr)->cap=DA_INIT_CAP;                            \
-			void* items=malloc((arr)->cap*sizeof(item));            \
-			if((arr)->items) {                                      \
-				memcpy(items,(arr)->items,(arr)->len*sizeof(item)); \
-				free((arr)->items);                                 \
-			}                                                       \
-			(arr)->items=items;                                     \
-		}                                                           \
-		(arr)->items[(arr)->len++]=item;                            \
-	} while(0)
+    do {                                                            \
+        if((arr)->len>=(arr)->cap) {                                \
+            if((arr)->cap) (arr)->cap*=2;                           \
+            else (arr)->cap=DA_INIT_CAP;                            \
+            void* items=malloc((arr)->cap*sizeof(item));            \
+            if((arr)->items) {                                      \
+                memcpy(items,(arr)->items,(arr)->len*sizeof(item)); \
+                free((arr)->items);                                 \
+            }                                                       \
+            (arr)->items=items;                                     \
+        }                                                           \
+        (arr)->items[(arr)->len++]=item;                            \
+    } while(0)
 
 typedef struct termios Termios;
 Termios initial_state={0};
