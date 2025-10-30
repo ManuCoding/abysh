@@ -56,6 +56,10 @@ void parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
 	size_t tlen=0;
 	for(size_t i=0; i<len; i++) {
 		if(command[i]=='=') {
+			if(cmd->len>0) {
+				tlen++;
+				continue;
+			}
 			if(tlen) {
 				for(; i<len && !isspace(command[i]); i++) tlen++;
 				command[i]='\0';
