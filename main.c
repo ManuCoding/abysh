@@ -468,13 +468,6 @@ void help(char* program,FILE* fd) {
 }
 
 int main(int argc,char** argv,char** envp) {
-	// char foo[1024];
-	// sprintf(foo,"\"woa\\\\h\"z123");
-	// size_t foolen=strlen(foo);
-	// size_t fooidx=0;
-	// parse_string(foo,&foolen,&fooidx);
-	// printf("%s %zu %zu (%.*s)\n",foo,foolen,fooidx,(int)foolen,foo);
-	// return 0;
 	signal(SIGWINCH,getsize);
 	pname=argv[0];
 	char* homedir=getenv("HOME");
