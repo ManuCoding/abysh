@@ -638,7 +638,9 @@ int main(int argc,char** argv,char** envp) {
 							}
 						}
 						if(WIFSIGNALED(status)) {
-							fprintf(stderr,"child %s (%d) terminated with signal %d (%s)\n",command,pid,WTERMSIG(status),strsignal(WTERMSIG(status)));
+							int signal=WTERMSIG(status);
+							if(signal==SIGPIPE) continue;
+							fprintf(stderr,"child %s (%d) terminated with signal %d (%s)\n",command,pid,signal,strsignal(signal));
 						}
 					}
 				} else {
