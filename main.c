@@ -22,6 +22,16 @@ typedef struct {
 	size_t len;
 } StrArr;
 
+typedef struct Cmd Cmd;
+
+struct Cmd {
+	Cmd* prev;
+	Cmd* next;
+	StrArr current;
+	StrArr tmpvars;
+	pid_t pid;
+};
+
 #define DA_INIT_CAP 4
 #define da_append(arr,item)                                         \
     do {                                                            \
@@ -92,17 +102,19 @@ bool parse_string(char* command,size_t* len,size_t* idx) {
 	return false;
 }
 
-bool parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
+bool parse_args(Cmd* cmd,char* command) {
 	size_t len=trim(&command);
 	size_t tlen=0;
+	cmd->current.len=0;
+	cmd->tmpvars.len=0;
 	for(size_t i=0; i<len; i++) {
 		if(command[i]=='=') {
-			if(cmd->len>0) {
+			if(cmd->current.len>0) {
 				tlen++;
 				continue;
 			}
 			if(tlen) {
-				for(; i<len && !isspace(command[i]); i++) {
+				for(; i<len && !isspace(command[i]) && command[i]!='|'; i++) {
 					if(command[i]=='"') {
 						size_t idx=i;
 						if(!parse_string(command,&len,&i)) {
@@ -114,15 +126,37 @@ bool parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
 					tlen++;
 				}
 				command[i]='\0';
-				da_append(tmpvars,command+i-tlen);
+				da_append(&cmd->tmpvars,command+i-tlen);
 				tlen=0;
 				continue;
 			}
 		}
+		if(command[i]=='|') {
+			if(tlen==0 && cmd->current.len==0) {
+				fprintf(stderr,"%s: unexpected '|'\n",pname);
+				return false;
+			}
+			if(tlen) {
+				command[i]='\0';
+				da_append(&cmd->current,command+i-tlen);
+				tlen=0;
+			}
+			Cmd* next=cmd->next;
+			if(next==NULL) {
+				next=malloc(sizeof(Cmd));
+				memset(next,0,sizeof(Cmd));
+				cmd->next=next;
+				next->prev=cmd;
+			}
+			cmd=next;
+			cmd->current.len=0;
+			cmd->tmpvars.len=0;
+			continue;
+		}
 		if(isspace(command[i])) {
 			if(tlen) {
 				command[i]='\0';
-				da_append(cmd,command+i-tlen);
+				da_append(&cmd->current,command+i-tlen);
 				tlen=0;
 			}
 		} else {
@@ -137,7 +171,8 @@ bool parse_args(StrArr* cmd,StrArr* tmpvars,char* command) {
 			tlen+=i-idx;
 		}
 	}
-	if(tlen) da_append(cmd,command+len-tlen);
+	if(tlen) da_append(&cmd->current,command+len-tlen);
+	if(cmd->next!=NULL) cmd->next->current.len=0;
 	return true;
 }
 
@@ -504,8 +539,7 @@ int main(int argc,char** argv,char** envp) {
 	char cwd[PATH_MAX];
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
-	StrArr cmd={0};
-	StrArr tmpvars={0};
+	Cmd cmd={0};
 	int status=0;
 	while(1) {
 		getcwd(cwd,PATH_MAX);
@@ -518,25 +552,22 @@ int main(int argc,char** argv,char** envp) {
 			sprintf(prompt+strlen(pname)+strlen(promptpath)+2,"[%s] > ",retbuf);
 		}
 		readline(prompt,command,history);
-		memset(&cmd,0,sizeof(cmd));
-		memset(&tmpvars,0,sizeof(tmpvars));
 		char* trimmed=command;
 		trim(&trimmed);
 		add_history(trimmed,&history);
-		if(!parse_args(&cmd,&tmpvars,trimmed)) continue;
-		if(cmd.len) {
-			expand_env(env,&cmd);
-			if(strcmp(cmd.items[0],"exit")==0) return 0;
-			if(strcmp(cmd.items[0],"hax")==0) {
+		if(!parse_args(&cmd,trimmed)) continue;
+		if(cmd.current.len) {
+			if(strcmp(cmd.current.items[0],"exit")==0) return 0;
+			if(strcmp(cmd.current.items[0],"hax")==0) {
 				printf("breaking your code >:)\n");
 				fclose(stdin);
 			}
-			if(strcmp(cmd.items[0],"cd")==0) {
+			if(strcmp(cmd.current.items[0],"cd")==0) {
 				char* newdir;
-				if(cmd.len==1) {
+				if(cmd.current.len==1) {
 					newdir=homedir;
 				} else {
-					newdir=cmd.items[1];
+					newdir=cmd.current.items[1];
 				}
 				int res=chdir(newdir);
 				if(res<0) {
@@ -549,52 +580,92 @@ int main(int argc,char** argv,char** envp) {
 				envedit(&env,"PWD",cwd);
 				continue;
 			}
-			if(strcmp(cmd.items[0],"version")==0) {
+			if(strcmp(cmd.current.items[0],"version")==0) {
 				version(pname,stdout);
 				continue;
 			}
-			if(strcmp(cmd.items[0],"help")==0) {
+			if(strcmp(cmd.current.items[0],"help")==0) {
 				help(pname,stdout);
 				continue;
 			}
-			da_append(&cmd,NULL);
-			expand_path(cmd,cwd,pathenv,pathbuf);
-			envedit(&env,"_",pathbuf);
+			expand_path(cmd.current,cwd,pathenv,pathbuf);
 			size_t env_len=env.len;
-			for(size_t i=0; i<tmpvars.len; i++) {
-				da_append(&env,tmpvars.items[i]);
-			}
-			da_append(&env,NULL);
-			pid_t pid=fork();
-			if(pid==0) {
-				int res=0;
-				res=execve(pathbuf,cmd.items,env.items);
-				if(res<0) {
-					fprintf(stderr,"Unknown command: %s\n",cmd.items[0]);
-					return 127;
-				}
-				fprintf(stderr,"%s: internal error\n",pname);
-				return 1;
-			} else {
-				waitpid(pid,&status,0);
+			int lastpipe[2]={-1,-1};
+			int nextpipe[2]={-1,-1};
+			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
+				expand_path(current->current,cwd,pathenv,pathbuf);
 				env.len=env_len;
+				bool last=current->next==NULL || current->next->current.len==0;
+				if(!last) pipe(nextpipe);
+				pid_t pid=fork();
+				if(pid!=0) current->pid=pid;
+				if(pid==0) {
+					int res=0;
+					if(lastpipe[0]>=0) {
+						dup2(lastpipe[0],STDIN_FILENO);
+						close(lastpipe[0]);
+					}
+					if(lastpipe[1]>=0) close(lastpipe[1]);
+					if(nextpipe[1]>=0)  {
+						dup2(nextpipe[1],STDOUT_FILENO);
+						close(nextpipe[1]);
+					}
+					if(nextpipe[0]>=0) close(nextpipe[0]);
+					for(size_t i=0; i<current->tmpvars.len; i++) {
+						StrArr tmpvars=current->tmpvars;
+						da_append(&env,tmpvars.items[i]);
+					}
+					envedit(&env,"_",pathbuf);
+					expand_env(env,&current->current);
+					da_append(&current->current,NULL);
+					da_append(&env,NULL);
+					res=execve(pathbuf,current->current.items,env.items);
+					if(res<0) {
+						fprintf(stderr,"Unknown command: %s\n",cmd.current.items[0]);
+						return 127;
+					}
+					fprintf(stderr,"%s: internal error\n",pname);
+					return 1;
+				} else if(last) {
+					if(lastpipe[0]>=0) close(lastpipe[0]);
+					if(lastpipe[1]>=0) close(lastpipe[1]);
+					while((pid=wait(&status))>0) {
+						char* command="<none>";
+						for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
+							if(current->pid==pid) {
+								command=current->current.items[0];
+								break;
+							}
+						}
+						if(WIFSIGNALED(status)) {
+							int signal=WTERMSIG(status);
+							if(signal==SIGPIPE) continue;
+							fprintf(stderr,"child %s (%d) terminated with signal %d (%s)\n",command,pid,signal,strsignal(signal));
+						}
+					}
+				} else {
+					if(lastpipe[0]>=0) close(lastpipe[0]);
+					if(lastpipe[1]>=0) close(lastpipe[1]);
+					lastpipe[0]=nextpipe[0];
+					lastpipe[1]=nextpipe[1];
+				}
 			}
-		} else if(tmpvars.len) {
-			for(size_t i=0; i<tmpvars.len; i++) {
+		} else if(cmd.tmpvars.len) {
+			for(size_t i=0; i<cmd.tmpvars.len; i++) {
 				size_t tlen=0;
-				size_t arglen=strlen(tmpvars.items[i]);
+				size_t arglen=strlen(cmd.tmpvars.items[i]);
 				for(size_t j=0; j<arglen; j++) {
-					if(tmpvars.items[i][j]=='=') {
-						tmpvars.items[i][j]='\0';
+					if(cmd.tmpvars.items[i][j]=='=') {
+						cmd.tmpvars.items[i][j]='\0';
 						break;
 					}
 					tlen++;
 				}
 				if(tlen==0) continue;
 				if(tlen+1<arglen) {
-					envedit(&env,tmpvars.items[i],tmpvars.items[i]+tlen+1);
+					envedit(&env,cmd.tmpvars.items[i],cmd.tmpvars.items[i]+tlen+1);
 				} else {
-					envedit(&env,tmpvars.items[i],NULL);
+					envedit(&env,cmd.tmpvars.items[i],NULL);
 				}
 			}
 		}
