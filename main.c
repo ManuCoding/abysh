@@ -225,6 +225,7 @@ void getsize(int _sig) {
 }
 
 void readline(char* prompt,char* command,StrArr history) {
+	static char killring[MAX_CMD_LEN]={0};
 	size_t idx=0;
 	size_t curlen=0;
 	size_t hist_idx=history.len;
@@ -359,6 +360,14 @@ delete_char:
 					idx--;
 				}
 				break;
+			case 'K'-'@':
+				if(idx>=curlen) break;
+				sprintf(killring,"%.*s",(int)(curlen-idx),command+idx);
+				for(size_t i=idx; i<curlen; i++) printf(" ");
+				for(size_t i=idx; i<curlen; i++) printf("\b");
+				curlen=idx;
+				command[curlen]='\0';
+				break;
 			case 'L'-'@':
 				printf("\x1b[H\x1b[2J%s%*s",prompt,(int)curlen,command);
 				for(size_t i=curlen; i>idx; i--) {
@@ -370,6 +379,36 @@ delete_char:
 				break;
 			case 'P'-'@':
 				goto prev_hist;
+				break;
+			case 'U'-'@':
+				if(idx==0) break;
+				sprintf(killring,"%.*s",(int)idx,command);
+				for(size_t i=0; i<idx; i++) printf("\b");
+				printf("%.*s",(int)(curlen-idx),command+idx);
+				for(size_t i=0; i<idx; i++) {
+					command[i]=command[i+idx];
+					printf(" ");
+				}
+				for(size_t i=0; i<curlen; i++) printf("\b");
+				fflush(stdout);
+				curlen-=idx;
+				idx=0;
+				break;
+			case 'Y'-'@':
+				size_t klen=strlen(killring);
+				if(klen==0) break;
+				if(klen+curlen>=MAX_CMD_LEN) klen=MAX_CMD_LEN-curlen-1;
+				printf("%.*s%s",(int)klen,killring,command+idx);
+				for(size_t i=idx; i<curlen && i+klen+1<MAX_CMD_LEN; i++) {
+					command[i+klen]=command[i];
+					printf("\b");
+				}
+				for(size_t i=0; i<klen; i++) {
+					command[i+idx]=killring[i];
+				}
+				fflush(stdout);
+				curlen+=klen;
+				idx+=klen;
 				break;
 			default:
 				if(ch<' ') continue;
