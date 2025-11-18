@@ -177,6 +177,7 @@ bool parse_args(Cmd* cmd,char* command) {
 }
 
 void expand_path(StrArr cmd,char* cwd,char* pathenv,char* pathbuf) {
+	if(pathenv==NULL) return;
 	if(cmd.len) {
 		size_t len=strlen(cmd.items[0]);
 		size_t tlen=0;
@@ -592,6 +593,7 @@ int main(int argc,char** argv,char** envp) {
 	for(;*envp;envp++) {
 		da_append(&global_env,*envp);
 	}
+	envedit(&global_env,"PATH",pathenv);
 	char* shlvlenv=envget(global_env,"SHLVL");
 	if(shlvlenv==NULL) shlvlenv="";
 	int shlvl=atoi(shlvlenv);
@@ -658,11 +660,9 @@ int main(int argc,char** argv,char** envp) {
 				help(pname,stdout);
 				continue;
 			}
-			expand_path(cmd.current,cwd,pathenv,pathbuf);
 			int lastpipe[2]={-1,-1};
 			int nextpipe[2]={-1,-1};
 			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
-				expand_path(current->current,cwd,pathenv,pathbuf);
 				bool last=current->next==NULL || current->next->current.len==0;
 				if(!last) pipe(nextpipe);
 				pid_t pid=fork();
@@ -680,6 +680,7 @@ int main(int argc,char** argv,char** envp) {
 					}
 					if(nextpipe[0]>=0) close(nextpipe[0]);
 					populate_env(&current_env,global_env,current->tmpvars);
+					expand_path(current->current,cwd,envget(current_env,"PATH"),pathbuf);
 					envedit(&current_env,"_",pathbuf);
 					expand_env(current_env,&current->current);
 					da_append(&current->current,NULL);
