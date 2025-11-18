@@ -526,6 +526,36 @@ void expand_env(StrArr env,StrArr* cmd) {
 	}
 }
 
+void populate_env(StrArr* current_env,StrArr global_env,StrArr tmpvars) {
+	current_env->len=0;
+create_env:
+	for(size_t i=0,idx=0; i<global_env.len+tmpvars.len; i++) {
+		if(i<global_env.len) {
+			da_append(current_env,global_env.items[i]);
+		} else {
+			char* item=tmpvars.items[i-global_env.len];
+			char* pos=memchr(item,'=',strlen(item));
+			static char varname[PATH_MAX];
+			memset(varname,0,sizeof(varname));
+			sprintf(varname,"%.*s",(int)(pos-item),item);
+			// TODO make this faster than O(n^2)
+			for(size_t j=0; j<current_env->len; j++) {
+				if(strncmp(current_env->items[j],item,(int)(pos-item))==0) {
+					current_env->items[j]=tmpvars.items[i-global_env.len];
+					continue create_env;
+				}
+			}
+			da_append(current_env,tmpvars.items[i-global_env.len]);
+		}
+		for(size_t j=idx; j>0 && strcmp(current_env->items[j],current_env->items[j-1])<0; j--) {
+			char* tmp=current_env->items[j];
+			current_env->items[j]=current_env->items[j-1];
+			current_env->items[j-1]=tmp;
+		}
+		idx++;
+	}
+}
+
 void version(char* program,FILE* fd) {
 	fprintf(fd,"%s (Abyss Shell) version %s\n",program,VERSION);
 }
@@ -557,11 +587,12 @@ int main(int argc,char** argv,char** envp) {
 		pname="(abysh)";
 		fprintf(stderr,"%s: warning: weird environment\n",pname);
 	}
-	StrArr env={0};
+	StrArr global_env={0};
+	StrArr current_env={0};
 	for(;*envp;envp++) {
-		da_append(&env,*envp);
+		da_append(&global_env,*envp);
 	}
-	char* shlvlenv=envget(env,"SHLVL");
+	char* shlvlenv=envget(global_env,"SHLVL");
 	if(shlvlenv==NULL) shlvlenv="";
 	int shlvl=atoi(shlvlenv);
 	if(shlvl<0) shlvl=0;
@@ -572,7 +603,7 @@ int main(int argc,char** argv,char** envp) {
 	shlvl++;
 	char shlvlbuf[10];
 	sprintf(shlvlbuf,"%d",shlvl);
-	envedit(&env,"SHLVL",shlvlbuf);
+	envedit(&global_env,"SHLVL",shlvlbuf);
 	StrArr history={0};
 	char command[MAX_CMD_LEN];
 	char cwd[PATH_MAX];
@@ -582,7 +613,7 @@ int main(int argc,char** argv,char** envp) {
 	int status=0;
 	while(1) {
 		getcwd(cwd,PATH_MAX);
-		envedit(&env,"PWD",cwd);
+		envedit(&global_env,"PWD",cwd);
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
@@ -616,7 +647,7 @@ int main(int argc,char** argv,char** envp) {
 				}
 				status=0;
 				getcwd(cwd,PATH_MAX);
-				envedit(&env,"PWD",cwd);
+				envedit(&global_env,"PWD",cwd);
 				continue;
 			}
 			if(strcmp(cmd.current.items[0],"version")==0) {
@@ -628,12 +659,10 @@ int main(int argc,char** argv,char** envp) {
 				continue;
 			}
 			expand_path(cmd.current,cwd,pathenv,pathbuf);
-			size_t env_len=env.len;
 			int lastpipe[2]={-1,-1};
 			int nextpipe[2]={-1,-1};
 			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
 				expand_path(current->current,cwd,pathenv,pathbuf);
-				env.len=env_len;
 				bool last=current->next==NULL || current->next->current.len==0;
 				if(!last) pipe(nextpipe);
 				pid_t pid=fork();
@@ -650,15 +679,12 @@ int main(int argc,char** argv,char** envp) {
 						close(nextpipe[1]);
 					}
 					if(nextpipe[0]>=0) close(nextpipe[0]);
-					for(size_t i=0; i<current->tmpvars.len; i++) {
-						StrArr tmpvars=current->tmpvars;
-						da_append(&env,tmpvars.items[i]);
-					}
-					envedit(&env,"_",pathbuf);
-					expand_env(env,&current->current);
+					populate_env(&current_env,global_env,current->tmpvars);
+					envedit(&current_env,"_",pathbuf);
+					expand_env(current_env,&current->current);
 					da_append(&current->current,NULL);
-					da_append(&env,NULL);
-					res=execve(pathbuf,current->current.items,env.items);
+					da_append(&current_env,NULL);
+					res=execve(pathbuf,current->current.items,current_env.items);
 					if(res<0) {
 						fprintf(stderr,"Unknown command: %s\n",cmd.current.items[0]);
 						return 127;
@@ -702,9 +728,9 @@ int main(int argc,char** argv,char** envp) {
 				}
 				if(tlen==0) continue;
 				if(tlen+1<arglen) {
-					envedit(&env,cmd.tmpvars.items[i],cmd.tmpvars.items[i]+tlen+1);
+					envedit(&global_env,cmd.tmpvars.items[i],cmd.tmpvars.items[i]+tlen+1);
 				} else {
-					envedit(&env,cmd.tmpvars.items[i],NULL);
+					envedit(&global_env,cmd.tmpvars.items[i],NULL);
 				}
 			}
 		}
