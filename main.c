@@ -566,10 +566,45 @@ void help(char* program,FILE* fd) {
 	fprintf(fd,"\n");
 	fprintf(fd,"List of builtin commands:\n");
 	fprintf(fd,"    exit           Close the shell\n");
-	fprintf(fd,"    hax            Attempt to close STDIN (bug testing)\n");
 	fprintf(fd,"    cd directory   Change CWD to directory\n");
 	fprintf(fd,"    version        Prints the version of the shell in a single line\n");
 	fprintf(fd,"    help           Print this help\n");
+}
+
+bool handle_builtin(StrArr current_env,Cmd cmd,int* status) {
+	if(strcmp(cmd.current.items[0],"exit")==0) {
+		if(cmd.current.len==1) {
+			exit(WEXITSTATUS(*status));
+		}
+		int res=atoi(cmd.current.items[1]);
+		exit(res);
+	}
+	if(strcmp(cmd.current.items[0],"cd")==0) {
+		char* newdir;
+		if(cmd.current.len==1) {
+			newdir=envget(current_env,"HOME");
+			if(newdir==NULL || *newdir=='\0') return true;
+		} else {
+			newdir=cmd.current.items[1];
+		}
+		int res=chdir(newdir);
+		if(res<0) {
+			fprintf(stderr,"%s: cd %s: %s\n",pname,newdir,strerror(errno));
+			*status=256;
+			return true;
+		}
+		*status=0;
+		return true;
+	}
+	if(strcmp(cmd.current.items[0],"version")==0) {
+		version(pname,stdout);
+		return true;
+	}
+	if(strcmp(cmd.current.items[0],"help")==0) {
+		help(pname,stdout);
+		return true;
+	}
+	return false;
 }
 
 int main(int argc,char** argv,char** envp) {
@@ -629,41 +664,15 @@ int main(int argc,char** argv,char** envp) {
 		add_history(trimmed,&history);
 		if(!parse_args(&cmd,trimmed)) continue;
 		if(cmd.current.len) {
-			if(strcmp(cmd.current.items[0],"exit")==0) return 0;
-			if(strcmp(cmd.current.items[0],"hax")==0) {
-				printf("breaking your code >:)\n");
-				fclose(stdin);
-			}
-			if(strcmp(cmd.current.items[0],"cd")==0) {
-				char* newdir;
-				if(cmd.current.len==1) {
-					newdir=homedir;
-				} else {
-					newdir=cmd.current.items[1];
-				}
-				int res=chdir(newdir);
-				if(res<0) {
-					fprintf(stderr,"%s: cd %s: %s\n",pname,newdir,strerror(errno));
-					status=256;
-					continue;
-				}
-				status=0;
-				getcwd(cwd,PATH_MAX);
-				envedit(&global_env,"PWD",cwd);
-				continue;
-			}
-			if(strcmp(cmd.current.items[0],"version")==0) {
-				version(pname,stdout);
-				continue;
-			}
-			if(strcmp(cmd.current.items[0],"help")==0) {
-				help(pname,stdout);
-				continue;
-			}
 			int lastpipe[2]={-1,-1};
 			int nextpipe[2]={-1,-1};
 			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
 				bool last=current->next==NULL || current->next->current.len==0;
+				populate_env(&current_env,global_env,current->tmpvars);
+				expand_path(current->current,cwd,envget(current_env,"PATH"),pathbuf);
+				envedit(&current_env,"_",pathbuf);
+				expand_env(current_env,&current->current);
+				if(handle_builtin(current_env,*current,&status)) continue;
 				if(!last) pipe(nextpipe);
 				pid_t pid=fork();
 				if(pid!=0) current->pid=pid;
@@ -679,10 +688,6 @@ int main(int argc,char** argv,char** envp) {
 						close(nextpipe[1]);
 					}
 					if(nextpipe[0]>=0) close(nextpipe[0]);
-					populate_env(&current_env,global_env,current->tmpvars);
-					expand_path(current->current,cwd,envget(current_env,"PATH"),pathbuf);
-					envedit(&current_env,"_",pathbuf);
-					expand_env(current_env,&current->current);
 					da_append(&current->current,NULL);
 					da_append(&current_env,NULL);
 					res=execve(pathbuf,current->current.items,current_env.items);
