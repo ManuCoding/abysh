@@ -14,7 +14,7 @@
 #include <unistd.h>
 
 #define MAX_CMD_LEN 4096
-#define VERSION "0.3.0"
+#define VERSION "0.4.0"
 
 typedef struct {
 	char** items;
