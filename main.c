@@ -326,13 +326,10 @@ delete_char:
 				}
 				break;
 			case 'A'-'@':
-				if(idx+prompt_len>term_width) printf("\x1b[%zuA",(idx+prompt_len)/term_width);
-				printf("\r\x1b[%zuC",prompt_len);
-				idx=0;
+				for(; idx>0; idx--) printf("\b");
 				break;
 			case 'E'-'@':
-				if(curlen+prompt_len>term_width) printf("\x1b[%zuB",(curlen-idx+prompt_len)/term_width);
-				printf("\r\x1b[%zuC",(curlen+prompt_len)%term_width);
+				printf("%.*s",(int)(curlen-idx),command+idx);
 				idx=curlen;
 				break;
 			case 'D'-'@':
