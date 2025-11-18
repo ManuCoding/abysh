@@ -452,6 +452,36 @@ void expand_env(StrArr env,StrArr* cmd) {
 	}
 }
 
+void populate_env(StrArr* current_env,StrArr global_env,StrArr tmpvars) {
+	current_env->len=0;
+create_env:
+	for(size_t i=0,idx=0; i<global_env.len+tmpvars.len; i++) {
+		if(i<global_env.len) {
+			da_append(current_env,global_env.items[i]);
+		} else {
+			char* item=tmpvars.items[i-global_env.len];
+			char* pos=memchr(item,'=',strlen(item));
+			static char varname[PATH_MAX];
+			memset(varname,0,sizeof(varname));
+			sprintf(varname,"%.*s",(int)(pos-item),item);
+			// TODO make this faster than O(n^2)
+			for(size_t j=0; j<current_env->len; j++) {
+				if(strncmp(current_env->items[j],item,(int)(pos-item))==0) {
+					current_env->items[j]=tmpvars.items[i-global_env.len];
+					continue create_env;
+				}
+			}
+			da_append(current_env,tmpvars.items[i-global_env.len]);
+		}
+		for(size_t j=idx; j>0 && strcmp(current_env->items[j],current_env->items[j-1])<0; j--) {
+			char* tmp=current_env->items[j];
+			current_env->items[j]=current_env->items[j-1];
+			current_env->items[j-1]=tmp;
+		}
+		idx++;
+	}
+}
+
 void version(char* program,FILE* fd) {
 	fprintf(fd,"%s (Abyss Shell) version %s\n",program,VERSION);
 }
@@ -525,33 +555,7 @@ int main(int argc,char** argv,char** envp) {
 		trim(&trimmed);
 		add_history(trimmed,&history);
 		if(!parse_args(&cmd,&tmpvars,trimmed)) continue;
-		current_env.len=0;
-create_env:
-		for(size_t i=0,idx=0; i<global_env.len+tmpvars.len; i++) {
-			if(i<global_env.len) {
-				da_append(&current_env,global_env.items[i]);
-			} else {
-				char* item=tmpvars.items[i-global_env.len];
-				char* pos=memchr(item,'=',strlen(item));
-				static char varname[PATH_MAX];
-				memset(varname,0,sizeof(varname));
-				sprintf(varname,"%.*s",(int)(pos-item),item);
-				// TODO make this faster than O(n^2)
-				for(size_t j=0; j<current_env.len; j++) {
-					if(strncmp(current_env.items[j],item,(int)(pos-item))==0) {
-						current_env.items[j]=tmpvars.items[i-global_env.len];
-						continue create_env;
-					}
-				}
-				da_append(&current_env,tmpvars.items[i-global_env.len]);
-			}
-			for(size_t j=idx; j>0 && strcmp(current_env.items[j],current_env.items[j-1])<0; j--) {
-				char* tmp=current_env.items[j];
-				current_env.items[j]=current_env.items[j-1];
-				current_env.items[j-1]=tmp;
-			}
-			idx++;
-		}
+		populate_env(&current_env,global_env,tmpvars);
 		if(cmd.len) {
 			expand_env(current_env,&cmd);
 			if(strcmp(cmd.items[0],"exit")==0) return 0;
