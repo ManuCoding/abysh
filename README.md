@@ -21,6 +21,7 @@ Or, if you're lazy, just run the `build.sh` script:
 - Temporary variable handling
 - Uses common variables like `PATH`, `HOME` and `SHLVL`
 - String unescaping (this one needs improvement)
+- Comments
 
 ## Upcoming Features
 - Improving string unescaping
@@ -28,7 +29,6 @@ Or, if you're lazy, just run the `build.sh` script:
 - File stream redirections
 - History fuzzy navigation (C-r/C-s)
 - Saving history to a file
-- Comments
 - Evaluating script files (shebang)
 - Acting normally over SSH
 - Coloooooors and customization

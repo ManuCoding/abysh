@@ -128,6 +128,7 @@ bool parse_args(Cmd* cmd,char* command) {
 				continue;
 			}
 		}
+		if(command[i]=='#' && tlen==0) return true;
 		if(command[i]=='|') {
 			if(tlen==0 && cmd->current.len==0) {
 				fprintf(stderr,"%s: unexpected '|'\n",pname);
