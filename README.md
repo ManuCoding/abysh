@@ -1,12 +1,6 @@
 # abysh - the abyssal shell
 Abysh is a deep and cool shell with the goal of being better than fish (the friendly interactive shell).
 
-## Testing
-Please fuzz this shell as much as possible! I want to find bugs in the `pipes` branch. Clone like this:
-```sh
-git clone -b pipes https://github.com/ManuCoding/abysh
-```
-
 ## Building
 This is a single-file C project, so you can simply use your favorite C compiler to compile `main.c` :D
 ```sh
@@ -18,4 +12,26 @@ Or, if you're lazy, just run the `build.sh` script:
 ```
 
 ## Features
-It has a few readline-like shortcuts, environment variables are parsed and evaluated properly and a few builtins.
+- Readline-like text movement commands
+- Kill ring
+- History
+- Command piping
+- The chdir (cd) command
+- Environment variable assignment and expansion
+- Temporary variable handling
+- Uses common variables like `PATH`, `HOME` and `SHLVL`
+- String unescaping (this one needs improvement)
+
+## Upcoming Features
+- Improving string unescaping
+- Expanding environment variables when mixed with text
+- File stream redirections
+- History fuzzy navigation (C-r/C-s)
+- Saving history to a file
+- Comments
+- Evaluating script files (shebang)
+- Acting normally over SSH
+- Coloooooors and customization
+- Handling the `.abyshrc` file
+- Add the ability to enable/disable features
+- Cool logo
