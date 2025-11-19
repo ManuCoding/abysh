@@ -591,8 +591,9 @@ int main(int argc,char** argv) {
 			int nextpipe[2]={-1,-1};
 			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
 				bool last=current->next==NULL || current->next->current.len==0;
-				expand_path(current->current,cwd,getenv("PATH"),pathbuf);
 				expand_env(current);
+				if(current->current.len==0 || current->current.items[0]==NULL || current->current.items[0][0]=='\0') continue;
+				expand_path(current->current,cwd,getenv("PATH"),pathbuf);
 				if(handle_builtin(*current,&status)) continue;
 				if(!last) pipe(nextpipe);
 				pid_t pid=fork();
