@@ -53,9 +53,6 @@ Termios initial_state={0};
 int keys_fd=0;
 size_t term_width=80;
 char* pname;
-// 8MB should be enough for everyone
-#define ENVPOOL_SIZE (8*1024*1024)
-char envpool[ENVPOOL_SIZE];
 char retbuf[1024];
 
 size_t trim(char** str) {
@@ -444,116 +441,45 @@ void add_history(char* command,StrArr* history) {
 	da_append(history,copy);
 }
 
-char* envget(StrArr env,char* var) {
-	if(var==NULL) return NULL;
-	size_t varlen=strlen(var);
-	for(size_t i=0; i<env.len; i++) {
-		if(strncmp(env.items[i],var,varlen)==0) {
-			if(env.items[i][varlen]=='=') return env.items[i]+varlen+1;
-		}
-	}
-	return NULL;
-}
-
-void envedit(StrArr* env,char* var,char* val) {
-	if(var==NULL) return;
-	size_t varlen=strlen(var);
-	for(size_t i=0; i<env->len; i++) {
-		if(strncmp(env->items[i],var,varlen)==0 && env->items[i][varlen]=='=') {
-			char* varat=env->items[i]-1;
-			env->items[i]=env->items[env->len-1];
-			env->len--;
-			if(*(uint8_t*)varat==255) {
-				size_t curlen=strlen(varat+3)+3;
-				for(size_t i=0; i<curlen; i+=256) {
-					*(char*)(varat+i)=0;
-				}
-			}
-			*varat=0;
-			break;
-		}
-	}
-	if(val==NULL || val[0]=='\0') return;
-	size_t totallen=varlen+strlen(val)+2;
-	if(totallen<255) {
-		size_t idx=0;
-		while(idx<ENVPOOL_SIZE && envpool[idx]) idx+=256;
-		if(idx>=ENVPOOL_SIZE) {
-			fprintf(stderr,"%s: could not set '%s': out of memory\n",pname,var);
-			return;
-		}
-		envpool[idx]=totallen;
-		sprintf(envpool+idx+1,"%s=%s",var,val);
-		da_append(env,&envpool[idx+1]);
-		return;
-	}
-	size_t idx=0;
-	size_t idx2=0;
-	if(totallen%256==255) totallen+=256;
-find_big_slot:
-	while(idx<ENVPOOL_SIZE && envpool[idx]) idx+=256;
-	for(idx2=idx; idx2<ENVPOOL_SIZE && idx2-idx<=totallen; idx2+=256) {
-		if(envpool[idx2]) goto find_big_slot;
-	}
-	if(idx2>=ENVPOOL_SIZE) {
-		fprintf(stderr,"%s: could not set '%s': out of memory\n",pname,var);
-		return;
-	}
-	envpool[idx]=255;
-	if(totallen%256==255) envpool[++idx]=1;
-	envpool[++idx]=0;
-	sprintf(envpool+idx,"%s=%s",var,val);
-	da_append(env,&envpool[idx]);
-}
-
-void expand_env(StrArr env,StrArr* cmd) {
-	for(size_t i=0; i<cmd->len; i++) {
+void expand_env(Cmd* cmd) {
+	for(size_t i=0; i<cmd->current.len; i++) {
 		// TODO expand variables when they're substrings of arguments
-		if(cmd->items[i][0]=='$') {
-			if(strcmp(cmd->items[i],"$?")==0) {
-				cmd->items[i]=retbuf;
+		if(cmd->current.items[i][0]=='$') {
+			if(strcmp(cmd->current.items[i],"$?")==0) {
+				cmd->current.items[i]=retbuf;
 				continue;
 			}
-			char* var=envget(env,cmd->items[i]+1);
-			if(var) {
-				cmd->items[i]=var;
-			} else {
-				for(size_t j=i+1; j<cmd->len; j++) {
-					cmd->items[j-1]=cmd->items[j];
+			size_t varlen=strlen(cmd->current.items[i]+1);
+			char* var=NULL;
+			for(size_t j=0; j<cmd->tmpvars.len; j++) {
+				if(strncmp(cmd->current.items[i]+1,cmd->tmpvars.items[j],varlen)==0) {
+					var=cmd->tmpvars.items[j]+varlen+1;
+					break;
 				}
-				cmd->len--;
+			}
+			if(var==NULL) var=getenv(cmd->current.items[i]+1);
+			if(var) {
+				cmd->current.items[i]=var;
+			} else {
+				for(size_t j=i+1; j<cmd->current.len; j++) {
+					cmd->current.items[j-1]=cmd->current.items[j];
+				}
+				cmd->current.len--;
 			}
 		}
 	}
 }
 
-void populate_env(StrArr* current_env,StrArr global_env,StrArr tmpvars) {
-	current_env->len=0;
-create_env:
-	for(size_t i=0,idx=0; i<global_env.len+tmpvars.len; i++) {
-		if(i<global_env.len) {
-			da_append(current_env,global_env.items[i]);
-		} else {
-			char* item=tmpvars.items[i-global_env.len];
-			char* pos=memchr(item,'=',strlen(item));
-			static char varname[PATH_MAX];
-			memset(varname,0,sizeof(varname));
-			sprintf(varname,"%.*s",(int)(pos-item),item);
-			// TODO make this faster than O(n^2)
-			for(size_t j=0; j<current_env->len; j++) {
-				if(strncmp(current_env->items[j],item,(int)(pos-item))==0) {
-					current_env->items[j]=tmpvars.items[i-global_env.len];
-					continue create_env;
-				}
-			}
-			da_append(current_env,tmpvars.items[i-global_env.len]);
+void populate_env(StrArr tmpvars) {
+	for(size_t i=0; i<tmpvars.len; i++) {
+		char* var=tmpvars.items[i];
+		char* eq=strchr(var,'=');
+		if(var+strlen(var)==eq+1) {
+			*eq='\0';
+			unsetenv(var);
+			continue;
 		}
-		for(size_t j=idx; j>0 && strcmp(current_env->items[j],current_env->items[j-1])<0; j--) {
-			char* tmp=current_env->items[j];
-			current_env->items[j]=current_env->items[j-1];
-			current_env->items[j-1]=tmp;
-		}
-		idx++;
+		putenv(var);
 	}
 }
 
@@ -571,7 +497,7 @@ void help(char* program,FILE* fd) {
 	fprintf(fd,"    help           Print this help\n");
 }
 
-bool handle_builtin(StrArr current_env,Cmd cmd,int* status) {
+bool handle_builtin(Cmd cmd,int* status) {
 	if(strcmp(cmd.current.items[0],"exit")==0) {
 		if(cmd.current.len==1) {
 			exit(WEXITSTATUS(*status));
@@ -582,7 +508,7 @@ bool handle_builtin(StrArr current_env,Cmd cmd,int* status) {
 	if(strcmp(cmd.current.items[0],"cd")==0) {
 		char* newdir;
 		if(cmd.current.len==1) {
-			newdir=envget(current_env,"HOME");
+			newdir=getenv("HOME");
 			if(newdir==NULL || *newdir=='\0') return true;
 		} else {
 			newdir=cmd.current.items[1];
@@ -607,7 +533,7 @@ bool handle_builtin(StrArr current_env,Cmd cmd,int* status) {
 	return false;
 }
 
-int main(int argc,char** argv,char** envp) {
+int main(int argc,char** argv) {
 	signal(SIGWINCH,getsize);
 	pname=argv[0];
 	char* homedir=getenv("HOME");
@@ -617,19 +543,16 @@ int main(int argc,char** argv,char** envp) {
 		homedir=malloc(PATH_MAX);
 		sprintf(homedir,"/home/%s",getpwuid(getuid())->pw_name);
 	}
-	if(pathenv==NULL) pathenv="/usr/local/sbin:/usr/local/bin:/usr/bin";
+	if(pathenv==NULL) {
+		pathenv="/usr/local/sbin:/usr/local/bin:/usr/bin";
+		setenv("PATH",pathenv,1);
+	}
 	remove_dir(pname,pname);
 	if(strlen(pname)==0 || argc<1) {
 		pname="(abysh)";
 		fprintf(stderr,"%s: warning: weird environment\n",pname);
 	}
-	StrArr global_env={0};
-	StrArr current_env={0};
-	for(;*envp;envp++) {
-		da_append(&global_env,*envp);
-	}
-	envedit(&global_env,"PATH",pathenv);
-	char* shlvlenv=envget(global_env,"SHLVL");
+	char* shlvlenv=getenv("SHLVL");
 	if(shlvlenv==NULL) shlvlenv="";
 	int shlvl=atoi(shlvlenv);
 	if(shlvl<0) shlvl=0;
@@ -640,7 +563,7 @@ int main(int argc,char** argv,char** envp) {
 	shlvl++;
 	char shlvlbuf[10];
 	sprintf(shlvlbuf,"%d",shlvl);
-	envedit(&global_env,"SHLVL",shlvlbuf);
+	setenv("SHLVL",shlvlbuf,1);
 	StrArr history={0};
 	char command[MAX_CMD_LEN];
 	char cwd[PATH_MAX];
@@ -650,7 +573,7 @@ int main(int argc,char** argv,char** envp) {
 	int status=0;
 	while(1) {
 		getcwd(cwd,PATH_MAX);
-		envedit(&global_env,"PWD",cwd);
+		setenv("PWD",cwd,1);
 		remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
@@ -668,11 +591,9 @@ int main(int argc,char** argv,char** envp) {
 			int nextpipe[2]={-1,-1};
 			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
 				bool last=current->next==NULL || current->next->current.len==0;
-				populate_env(&current_env,global_env,current->tmpvars);
-				expand_path(current->current,cwd,envget(current_env,"PATH"),pathbuf);
-				envedit(&current_env,"_",pathbuf);
-				expand_env(current_env,&current->current);
-				if(handle_builtin(current_env,*current,&status)) continue;
+				expand_path(current->current,cwd,getenv("PATH"),pathbuf);
+				expand_env(current);
+				if(handle_builtin(*current,&status)) continue;
 				if(!last) pipe(nextpipe);
 				pid_t pid=fork();
 				if(pid!=0) current->pid=pid;
@@ -689,8 +610,9 @@ int main(int argc,char** argv,char** envp) {
 					}
 					if(nextpipe[0]>=0) close(nextpipe[0]);
 					da_append(&current->current,NULL);
-					da_append(&current_env,NULL);
-					res=execve(pathbuf,current->current.items,current_env.items);
+					populate_env(current->tmpvars);
+					setenv("_",pathbuf,1);
+					res=execv(pathbuf,current->current.items);
 					if(res<0) {
 						fprintf(stderr,"Unknown command: %s\n",cmd.current.items[0]);
 						return 127;
@@ -734,9 +656,9 @@ int main(int argc,char** argv,char** envp) {
 				}
 				if(tlen==0) continue;
 				if(tlen+1<arglen) {
-					envedit(&global_env,cmd.tmpvars.items[i],cmd.tmpvars.items[i]+tlen+1);
+					setenv(cmd.tmpvars.items[i],cmd.tmpvars.items[i]+tlen+1,1);
 				} else {
-					envedit(&global_env,cmd.tmpvars.items[i],NULL);
+					unsetenv(cmd.tmpvars.items[i]);
 				}
 			}
 		}
