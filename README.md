@@ -20,13 +20,14 @@ Or, if you're lazy, just run the `build.sh` script:
 - Environment variable assignment and expansion
 - Temporary variable handling
 - Uses common variables like `PATH`, `HOME` and `SHLVL`
-- String unescaping (this one needs improvement)
+- String unescaping
 - Comments
 
 ## Upcoming Features
-- Improving string unescaping
 - Expanding environment variables when mixed with text
 - File stream redirections
+- Capture child process signals
+- Background jobs
 - History fuzzy navigation (C-r/C-s)
 - Saving history to a file
 - Evaluating script files (shebang)

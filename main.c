@@ -87,6 +87,7 @@ bool parse_string(char* command,size_t* len,size_t* idx) {
 		}
 		if(command[*idx]=='\\') {
 			if(*idx+1<*len) {
+				if(command[*idx+1]!='"' && command[*idx+1]!='\\') continue;
 				for(size_t i=*idx; i+1<*len; i++) {
 					command[i]=command[i+1];
 				}
@@ -104,6 +105,7 @@ bool parse_args(Cmd* cmd,char* command) {
 	size_t tlen=0;
 	cmd->current.len=0;
 	cmd->tmpvars.len=0;
+	char* varstart=NULL;
 	for(size_t i=0; i<len; i++) {
 		if(command[i]=='=') {
 			if(cmd->current.len>0) {
@@ -111,22 +113,21 @@ bool parse_args(Cmd* cmd,char* command) {
 				continue;
 			}
 			if(tlen) {
-				for(; i<len && !isspace(command[i]) && command[i]!='|'; i++) {
-					if(command[i]=='"') {
-						size_t idx=i;
-						if(!parse_string(command,&len,&i)) {
-							fprintf(stderr,"%s: unexpected EOF while looking for matching '\"'\n",pname);
-							return false;
-						}
-						tlen+=i-idx;
-					}
-					tlen++;
-				}
-				command[i]='\0';
-				da_append(&cmd->tmpvars,command+i-tlen);
-				tlen=0;
+				varstart=command+i-tlen;
 				continue;
 			}
+		}
+		if(command[i]=='\\') {
+			if(i+1>=len) {
+				tlen++;
+				continue;
+			}
+			for(size_t j=i; j+1<len; j++) {
+				command[j]=command[j+1];
+			}
+			command[--len]='\0';
+			tlen++;
+			continue;
 		}
 		if(command[i]=='#' && tlen==0) return true;
 		if(command[i]=='|') {
@@ -151,25 +152,35 @@ bool parse_args(Cmd* cmd,char* command) {
 			cmd->tmpvars.len=0;
 			continue;
 		}
-		if(isspace(command[i])) {
-			if(tlen) {
-				command[i]='\0';
-				da_append(&cmd->current,command+i-tlen);
-				tlen=0;
-			}
-		} else {
-			tlen++;
-		}
 		if(command[i]=='"') {
 			size_t idx=i;
 			if(!parse_string(command,&len,&i)) {
 				fprintf(stderr,"%s: unexpected EOF while looking for matching '\"'\n",pname);
 				return false;
 			}
-			tlen+=i-idx;
+			tlen+=i-idx+1;
+			continue;
+		}
+		if(isspace(command[i])) {
+			if(tlen) {
+				command[i]='\0';
+				if(varstart) {
+					da_append(&cmd->tmpvars,varstart);
+					varstart=NULL;
+					tlen=0;
+					continue;
+				}
+				da_append(&cmd->current,command+i-tlen);
+				tlen=0;
+			}
+		} else {
+			tlen++;
 		}
 	}
-	if(tlen) da_append(&cmd->current,command+len-tlen);
+	if(tlen) {
+		if(varstart) da_append(&cmd->tmpvars,varstart);
+		else da_append(&cmd->current,command+len-tlen);
+	}
 	if(cmd->next!=NULL) cmd->next->current.len=0;
 	return true;
 }
