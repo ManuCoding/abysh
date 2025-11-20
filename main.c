@@ -167,16 +167,22 @@ bool parse_args(Cmd* cmd,char* command) {
 		}
 		if(command[i]=='$') {
 			size_t idx=i+1;
-			for(; idx<len && command[idx]!='|' && command[idx]!='"' && command[idx]!='$' && !isspace(command[idx]); idx++) {}
+			char* varvalue=NULL;
+			if(idx<len && command[idx]=='?') {
+				varvalue=retbuf;
+				idx++;
+			} else for(; idx<len && (isalnum(command[idx]) || command[idx]=='_') && !isspace(command[idx]); idx++) {}
 			idx--;
 			if(idx-i==0) {
 				tlen++;
 				continue;
 			}
+			if(isdigit(*(command+i+1))) {
+				tlen++;
+				continue;
+			}
 			static char varnamebuf[MAX_CMD_LEN];
 			sprintf(varnamebuf,"%.*s=",(int)(idx-i),command+i+1);
-			char* varvalue=NULL;
-			if(strcmp(varnamebuf,"?=")==0) varvalue=retbuf;
 			for(size_t j=cmd->tmpvars.len; varvalue==NULL && j>0; j--) {
 				if(strncmp(varnamebuf,cmd->tmpvars.items[j-1],idx-i+1)==0) {
 					varvalue=cmd->tmpvars.items[j-1]+idx-i+1;
