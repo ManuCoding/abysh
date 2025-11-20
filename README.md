@@ -23,13 +23,13 @@ Or, if you're lazy, just run the `build.sh` script:
 - String unescaping
 - Comments
 - Expanding environment variables when mixed with text
+- Saving history to a file
 
 ## Upcoming Features
 - File stream redirections
 - Capture child process signals
 - Background jobs
 - History fuzzy navigation (C-r/C-s)
-- Saving history to a file
 - Evaluating script files (shebang)
 - Acting normally over SSH
 - Coloooooors and customization

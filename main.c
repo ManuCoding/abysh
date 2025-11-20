@@ -16,6 +16,8 @@
 #define MAX_CMD_LEN 4096
 #define VERSION "0.4.0"
 
+#define HIST_BUF_CAP (1024*1024)
+
 typedef struct {
 	char** items;
 	size_t cap;
@@ -54,6 +56,8 @@ int keys_fd=0;
 size_t term_width=80;
 char* pname;
 char retbuf[1024];
+static char histbuf[HIST_BUF_CAP];
+size_t histidx=0;
 
 size_t trim(char** str) {
 	size_t len=strnlen(*str,MAX_CMD_LEN);
@@ -482,9 +486,47 @@ delete_char:
 
 void add_history(char* command,StrArr* history) {
 	if(history->len>0 && strcmp(command,history->items[history->len-1])==0) return;
-	char* copy=malloc(MAX_CMD_LEN);
-	memcpy(copy,command,strlen(command));
+	size_t len=strlen(command);
+	// TODO actually use the global histbuf buffer
+	char* copy=malloc(len+1);
+	memcpy(copy,command,len+1);
 	da_append(history,copy);
+}
+
+void populate_history(StrArr* history,char* homedir) {
+	char histfilename[PATH_MAX];
+	sprintf(histfilename,"%s/.abysh_history",homedir);
+	FILE* histfile=fopen(histfilename,"r");
+	if(histfile==NULL) return;
+	ssize_t count=0;
+	char* curline=NULL;
+	for(size_t n=0,remaining=HIST_BUF_CAP; remaining>0 && (count=getline(&curline,&n,histfile))!=-1 && (size_t)count<remaining; remaining-=count) {
+		char* nl=strchr(curline,'\n');
+		if(nl) *nl='\0';
+		char* line=curline;
+		size_t len=trim(&line);
+		if(len==0) continue;
+		if(history->len>0 && strcmp(history->items[history->len-1],line)==0) continue;
+		memcpy(histbuf+histidx,line,len+1);
+		da_append(history,histbuf+histidx);
+		histidx+=len+1;
+	}
+	if(curline) free(curline);
+	fclose(histfile);
+}
+
+bool write_history(StrArr history,char* homedir) {
+	char histfilename[PATH_MAX];
+	sprintf(histfilename,"%s/.abysh_history",homedir);
+	FILE* histfile=fopen(histfilename,"w");
+	if(histfile==NULL) return false;
+	// removing pesky trailing exits
+	while(history.len>0 && strcmp(history.items[history.len-1],"exit")==0) history.len--;
+	for(size_t i=0; i<history.len; i++) {
+		fprintf(histfile,"%s\n",history.items[i]);
+	}
+	fclose(histfile);
+	return true;
 }
 
 void populate_env(StrArr tmpvars) {
@@ -514,8 +556,9 @@ void help(char* program,FILE* fd) {
 	fprintf(fd,"    help           Print this help\n");
 }
 
-bool handle_builtin(Cmd cmd,int* status) {
+bool handle_builtin(Cmd cmd,int* status,StrArr history,char* homedir) {
 	if(strcmp(cmd.current.items[0],"exit")==0) {
+		write_history(history,homedir);
 		if(cmd.current.len==1) {
 			exit(WEXITSTATUS(*status));
 		}
@@ -588,6 +631,7 @@ int main(int argc,char** argv) {
 	char prompt[PATH_MAX*2];
 	Cmd cmd={0};
 	int status=0;
+	populate_history(&history,homedir);
 	while(1) {
 		getcwd(cwd,PATH_MAX);
 		setenv("PWD",cwd,1);
@@ -610,7 +654,7 @@ int main(int argc,char** argv) {
 				bool last=current->next==NULL || current->next->current.len==0;
 				if(current->current.len==0 || current->current.items[0]==NULL || current->current.items[0][0]=='\0') continue;
 				expand_path(current->current,cwd,getenv("PATH"),pathbuf);
-				if(handle_builtin(*current,&status)) continue;
+				if(handle_builtin(*current,&status,history,homedir)) continue;
 				if(!last) pipe(nextpipe);
 				pid_t pid=fork();
 				if(pid!=0) current->pid=pid;
