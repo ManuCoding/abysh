@@ -161,6 +161,40 @@ bool parse_args(Cmd* cmd,char* command) {
 			tlen+=i-idx+1;
 			continue;
 		}
+		if(command[i]=='$') {
+			size_t idx=i+1;
+			for(; idx<len && command[idx]!='|' && command[idx]!='"' && command[idx]!='$' && !isspace(command[idx]); idx++) {}
+			idx--;
+			if(idx-i==0) {
+				tlen++;
+				continue;
+			}
+			static char varnamebuf[MAX_CMD_LEN];
+			sprintf(varnamebuf,"%.*s=",(int)(idx-i),command+i+1);
+			char* varvalue=NULL;
+			if(strcmp(varnamebuf,"?=")==0) varvalue=retbuf;
+			for(size_t j=cmd->tmpvars.len; varvalue==NULL && j>0; j--) {
+				if(strncmp(varnamebuf,cmd->tmpvars.items[j-1],idx-i+1)==0) {
+					varvalue=cmd->tmpvars.items[j-1]+idx-i+1;
+				}
+			}
+			varnamebuf[idx-i]='\0';
+			if(varvalue==NULL) varvalue=getenv(varnamebuf);
+			if(varvalue==NULL) varvalue="";
+			size_t varnamelen=strlen(varnamebuf);
+			size_t varlen=strlen(varvalue);
+			if(varlen+1>=MAX_CMD_LEN-i) varlen=MAX_CMD_LEN-i-1;
+			size_t totallen=len+varlen-1-varnamelen;
+			if(totallen+1>=MAX_CMD_LEN) totallen=MAX_CMD_LEN-1;
+			memmove(command+i+varlen,command+i+1+varnamelen,len-i-1-varnamelen);
+			memcpy(command+i,varvalue,varlen);
+			tlen+=varlen;
+			i+=varlen;
+			i--;
+			len=totallen;
+			command[len]='\0';
+			continue;
+		}
 		if(isspace(command[i])) {
 			if(tlen) {
 				command[i]='\0';
@@ -453,35 +487,6 @@ void add_history(char* command,StrArr* history) {
 	da_append(history,copy);
 }
 
-void expand_env(Cmd* cmd) {
-	for(size_t i=0; i<cmd->current.len; i++) {
-		// TODO expand variables when they're substrings of arguments
-		if(cmd->current.items[i][0]=='$') {
-			if(strcmp(cmd->current.items[i],"$?")==0) {
-				cmd->current.items[i]=retbuf;
-				continue;
-			}
-			size_t varlen=strlen(cmd->current.items[i]+1);
-			char* var=NULL;
-			for(size_t j=0; j<cmd->tmpvars.len; j++) {
-				if(strncmp(cmd->current.items[i]+1,cmd->tmpvars.items[j],varlen)==0) {
-					var=cmd->tmpvars.items[j]+varlen+1;
-					break;
-				}
-			}
-			if(var==NULL) var=getenv(cmd->current.items[i]+1);
-			if(var) {
-				cmd->current.items[i]=var;
-			} else {
-				for(size_t j=i+1; j<cmd->current.len; j++) {
-					cmd->current.items[j-1]=cmd->current.items[j];
-				}
-				cmd->current.len--;
-			}
-		}
-	}
-}
-
 void populate_env(StrArr tmpvars) {
 	for(size_t i=0; i<tmpvars.len; i++) {
 		char* var=tmpvars.items[i];
@@ -603,7 +608,6 @@ int main(int argc,char** argv) {
 			int nextpipe[2]={-1,-1};
 			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
 				bool last=current->next==NULL || current->next->current.len==0;
-				expand_env(current);
 				if(current->current.len==0 || current->current.items[0]==NULL || current->current.items[0][0]=='\0') continue;
 				expand_path(current->current,cwd,getenv("PATH"),pathbuf);
 				if(handle_builtin(*current,&status)) continue;

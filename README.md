@@ -22,9 +22,9 @@ Or, if you're lazy, just run the `build.sh` script:
 - Uses common variables like `PATH`, `HOME` and `SHLVL`
 - String unescaping
 - Comments
+- Expanding environment variables when mixed with text
 
 ## Upcoming Features
-- Expanding environment variables when mixed with text
 - File stream redirections
 - Capture child process signals
 - Background jobs
