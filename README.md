@@ -24,6 +24,7 @@ Or, if you're lazy, just run the `build.sh` script:
 - Comments
 - Expanding environment variables when mixed with text
 - Saving history to a file
+- Expanding ~ to the HOME environment variable
 
 ## Upcoming Features
 - File stream redirections

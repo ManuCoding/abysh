@@ -165,6 +165,37 @@ bool parse_args(Cmd* cmd,char* command) {
 			tlen+=i-idx+1;
 			continue;
 		}
+		if(command[i]=='~') {
+			if((tlen>0 && varstart==NULL) || (varstart && varstart-command-tlen==1)) {
+				tlen++;
+				continue;
+			}
+			if(i+1>=len || isspace(command[i+1]) || command[i+1]=='|' || command[i+1]=='/') {
+				char* homedir=getenv("HOME");
+				if(homedir==NULL) {
+					for(size_t j=i; j+1<len; j++) {
+						command[j]=command[j+1];
+					}
+					command[--len]='\0';
+				} else {
+					size_t homelen=strlen(homedir);
+					if(homelen+1>=MAX_CMD_LEN-i) homelen=MAX_CMD_LEN-i-1;
+					size_t totallen=len+homelen-1;
+					if(totallen+1>=MAX_CMD_LEN) totallen=MAX_CMD_LEN-1;
+					memmove(command+i+homelen,command+i+1,len-i-1);
+					memcpy(command+i,homedir,homelen);
+					tlen=homelen;
+					i+=homelen;
+					// FIXME this may underflow `i`, BUT IT'S FINE since it immediately gets increased
+					// actually every branch of this function should set `i` themselves and `i` would
+					// only get incremented at the end
+					i--;
+					len=totallen;
+					command[len]='\0';
+				}
+				continue;
+			}
+		}
 		if(command[i]=='$') {
 			size_t idx=i+1;
 			char* varvalue=NULL;
@@ -641,7 +672,8 @@ int main(int argc,char** argv) {
 	while(1) {
 		getcwd(cwd,PATH_MAX);
 		setenv("PWD",cwd,1);
-		remove_dir(promptpath,cwd);
+		if(strcmp(homedir,cwd)==0) sprintf(promptpath,"~");
+		else remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
 		sprintf(retbuf,"%d",WEXITSTATUS(status));
