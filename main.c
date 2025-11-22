@@ -14,7 +14,9 @@
 #include <unistd.h>
 
 #define MAX_CMD_LEN 4096
-#define VERSION "0.3.0"
+#define VERSION "0.4.0"
+
+#define HIST_BUF_CAP (1024*1024)
 
 typedef struct {
 	char** items;
@@ -53,10 +55,9 @@ Termios initial_state={0};
 int keys_fd=0;
 size_t term_width=80;
 char* pname;
-// 8MB should be enough for everyone
-#define ENVPOOL_SIZE (8*1024*1024)
-char envpool[ENVPOOL_SIZE];
 char retbuf[1024];
+static char histbuf[HIST_BUF_CAP];
+size_t histidx=0;
 
 size_t trim(char** str) {
 	size_t len=strnlen(*str,MAX_CMD_LEN);
@@ -90,6 +91,7 @@ bool parse_string(char* command,size_t* len,size_t* idx) {
 		}
 		if(command[*idx]=='\\') {
 			if(*idx+1<*len) {
+				if(command[*idx+1]!='"' && command[*idx+1]!='\\') continue;
 				for(size_t i=*idx; i+1<*len; i++) {
 					command[i]=command[i+1];
 				}
@@ -107,6 +109,7 @@ bool parse_args(Cmd* cmd,char* command) {
 	size_t tlen=0;
 	cmd->current.len=0;
 	cmd->tmpvars.len=0;
+	char* varstart=NULL;
 	for(size_t i=0; i<len; i++) {
 		if(command[i]=='=') {
 			if(cmd->current.len>0) {
@@ -114,23 +117,23 @@ bool parse_args(Cmd* cmd,char* command) {
 				continue;
 			}
 			if(tlen) {
-				for(; i<len && !isspace(command[i]) && command[i]!='|'; i++) {
-					if(command[i]=='"') {
-						size_t idx=i;
-						if(!parse_string(command,&len,&i)) {
-							fprintf(stderr,"%s: unexpected EOF while looking for matching '\"'\n",pname);
-							return false;
-						}
-						tlen+=i-idx;
-					}
-					tlen++;
-				}
-				command[i]='\0';
-				da_append(&cmd->tmpvars,command+i-tlen);
-				tlen=0;
+				varstart=command+i-tlen;
 				continue;
 			}
 		}
+		if(command[i]=='\\') {
+			if(i+1>=len) {
+				tlen++;
+				continue;
+			}
+			for(size_t j=i; j+1<len; j++) {
+				command[j]=command[j+1];
+			}
+			command[--len]='\0';
+			tlen++;
+			continue;
+		}
+		if(command[i]=='#' && tlen==0) return true;
 		if(command[i]=='|') {
 			if(tlen==0 && cmd->current.len==0) {
 				fprintf(stderr,"%s: unexpected '|'\n",pname);
@@ -153,30 +156,112 @@ bool parse_args(Cmd* cmd,char* command) {
 			cmd->tmpvars.len=0;
 			continue;
 		}
-		if(isspace(command[i])) {
-			if(tlen) {
-				command[i]='\0';
-				da_append(&cmd->current,command+i-tlen);
-				tlen=0;
-			}
-		} else {
-			tlen++;
-		}
 		if(command[i]=='"') {
 			size_t idx=i;
 			if(!parse_string(command,&len,&i)) {
 				fprintf(stderr,"%s: unexpected EOF while looking for matching '\"'\n",pname);
 				return false;
 			}
-			tlen+=i-idx;
+			tlen+=i-idx+1;
+			continue;
+		}
+		if(command[i]=='~') {
+			if((tlen>0 && varstart==NULL) || (varstart && varstart-command-tlen==1)) {
+				tlen++;
+				continue;
+			}
+			if(i+1>=len || isspace(command[i+1]) || command[i+1]=='|' || command[i+1]=='/') {
+				char* homedir=getenv("HOME");
+				if(homedir==NULL) {
+					for(size_t j=i; j+1<len; j++) {
+						command[j]=command[j+1];
+					}
+					command[--len]='\0';
+				} else {
+					size_t homelen=strlen(homedir);
+					if(homelen+1>=MAX_CMD_LEN-i) homelen=MAX_CMD_LEN-i-1;
+					size_t totallen=len+homelen-1;
+					if(totallen+1>=MAX_CMD_LEN) totallen=MAX_CMD_LEN-1;
+					memmove(command+i+homelen,command+i+1,len-i-1);
+					memcpy(command+i,homedir,homelen);
+					tlen=homelen;
+					i+=homelen;
+					// FIXME this may underflow `i`, BUT IT'S FINE since it immediately gets increased
+					// actually every branch of this function should set `i` themselves and `i` would
+					// only get incremented at the end
+					i--;
+					len=totallen;
+					command[len]='\0';
+				}
+				continue;
+			}
+		}
+		if(command[i]=='$') {
+			size_t idx=i+1;
+			char* varvalue=NULL;
+			if(idx<len && command[idx]=='?') {
+				varvalue=retbuf;
+				idx++;
+			} else for(; idx<len && (isalnum(command[idx]) || command[idx]=='_') && !isspace(command[idx]); idx++) {}
+			idx--;
+			if(idx-i==0) {
+				tlen++;
+				continue;
+			}
+			if(isdigit(*(command+i+1))) {
+				tlen++;
+				continue;
+			}
+			static char varnamebuf[MAX_CMD_LEN];
+			sprintf(varnamebuf,"%.*s=",(int)(idx-i),command+i+1);
+			for(size_t j=cmd->tmpvars.len; varvalue==NULL && j>0; j--) {
+				if(strncmp(varnamebuf,cmd->tmpvars.items[j-1],idx-i+1)==0) {
+					varvalue=cmd->tmpvars.items[j-1]+idx-i+1;
+				}
+			}
+			varnamebuf[idx-i]='\0';
+			if(varvalue==NULL) varvalue=getenv(varnamebuf);
+			if(varvalue==NULL) varvalue="";
+			size_t varnamelen=strlen(varnamebuf);
+			size_t varlen=strlen(varvalue);
+			if(varlen+1>=MAX_CMD_LEN-i) varlen=MAX_CMD_LEN-i-1;
+			size_t totallen=len+varlen-1-varnamelen;
+			if(totallen+1>=MAX_CMD_LEN) totallen=MAX_CMD_LEN-1;
+			memmove(command+i+varlen,command+i+1+varnamelen,len-i-1-varnamelen);
+			memcpy(command+i,varvalue,varlen);
+			tlen+=varlen;
+			i+=varlen;
+			i--;
+			len=totallen;
+			command[len]='\0';
+			continue;
+		}
+		if(isspace(command[i])) {
+			if(tlen) {
+				command[i]='\0';
+				if(varstart) {
+					da_append(&cmd->tmpvars,varstart);
+					varstart=NULL;
+					tlen=0;
+					continue;
+				}
+				da_append(&cmd->current,command+i-tlen);
+				tlen=0;
+			}
+		} else {
+			tlen++;
 		}
 	}
-	if(tlen) da_append(&cmd->current,command+len-tlen);
+	if(tlen) {
+		if(varstart) da_append(&cmd->tmpvars,varstart);
+		else da_append(&cmd->current,command+len-tlen);
+	}
 	if(cmd->next!=NULL) cmd->next->current.len=0;
 	return true;
 }
 
 void expand_path(StrArr cmd,char* cwd,char* pathenv,char* pathbuf) {
+	if(pathenv==NULL) return;
 	if(cmd.len) {
 		size_t len=strlen(cmd.items[0]);
 		size_t tlen=0;
@@ -438,91 +523,59 @@ delete_char:
 
 void add_history(char* command,StrArr* history) {
 	if(history->len>0 && strcmp(command,history->items[history->len-1])==0) return;
-	char* copy=malloc(MAX_CMD_LEN);
-	memcpy(copy,command,strlen(command));
+	size_t len=strlen(command);
+	// TODO actually use the global histbuf buffer
+	char* copy=malloc(len+1);
+	memcpy(copy,command,len+1);
 	da_append(history,copy);
 }
 
-char* envget(StrArr env,char* var) {
-	if(var==NULL) return NULL;
-	size_t varlen=strlen(var);
-	for(size_t i=0; i<env.len; i++) {
-		if(strncmp(env.items[i],var,varlen)==0) {
-			if(env.items[i][varlen]=='=') return env.items[i]+varlen+1;
-		}
+void populate_history(StrArr* history,char* homedir) {
+	char histfilename[PATH_MAX];
+	sprintf(histfilename,"%s/.abysh_history",homedir);
+	FILE* histfile=fopen(histfilename,"r");
+	if(histfile==NULL) return;
+	ssize_t count=0;
+	char* curline=NULL;
+	for(size_t n=0,remaining=HIST_BUF_CAP; remaining>0 && (count=getline(&curline,&n,histfile))!=-1 && (size_t)count<remaining; remaining-=count) {
+		char* nl=strchr(curline,'\n');
+		if(nl) *nl='\0';
+		char* line=curline;
+		size_t len=trim(&line);
+		if(len==0) continue;
+		if(history->len>0 && strcmp(history->items[history->len-1],line)==0) continue;
+		memcpy(histbuf+histidx,line,len+1);
+		da_append(history,histbuf+histidx);
+		histidx+=len+1;
 	}
-	return NULL;
+	if(curline) free(curline);
+	fclose(histfile);
 }
 
-void envedit(StrArr* env,char* var,char* val) {
-	if(var==NULL) return;
-	size_t varlen=strlen(var);
-	for(size_t i=0; i<env->len; i++) {
-		if(strncmp(env->items[i],var,varlen)==0 && env->items[i][varlen]=='=') {
-			char* varat=env->items[i]-1;
-			env->items[i]=env->items[env->len-1];
-			env->len--;
-			if(*(uint8_t*)varat==255) {
-				size_t curlen=strlen(varat+3)+3;
-				for(size_t i=0; i<curlen; i+=256) {
-					*(char*)(varat+i)=0;
-				}
-			}
-			*varat=0;
-			break;
-		}
+bool write_history(StrArr history,char* homedir) {
+	char histfilename[PATH_MAX];
+	sprintf(histfilename,"%s/.abysh_history",homedir);
+	FILE* histfile=fopen(histfilename,"w");
+	if(histfile==NULL) return false;
+	// removing pesky trailing exits
+	while(history.len>0 && strcmp(history.items[history.len-1],"exit")==0) history.len--;
+	for(size_t i=0; i<history.len; i++) {
+		fprintf(histfile,"%s\n",history.items[i]);
 	}
-	if(val==NULL || val[0]=='\0') return;
-	size_t totallen=varlen+strlen(val)+2;
-	if(totallen<255) {
-		size_t idx=0;
-		while(idx<ENVPOOL_SIZE && envpool[idx]) idx+=256;
-		if(idx>=ENVPOOL_SIZE) {
-			fprintf(stderr,"%s: could not set '%s': out of memory\n",pname,var);
-			return;
-		}
-		envpool[idx]=totallen;
-		sprintf(envpool+idx+1,"%s=%s",var,val);
-		da_append(env,&envpool[idx+1]);
-		return;
-	}
-	size_t idx=0;
-	size_t idx2=0;
-	if(totallen%256==255) totallen+=256;
-find_big_slot:
-	while(idx<ENVPOOL_SIZE && envpool[idx]) idx+=256;
-	for(idx2=idx; idx2<ENVPOOL_SIZE && idx2-idx<=totallen; idx2+=256) {
-		if(envpool[idx2]) goto find_big_slot;
-	}
-	if(idx2>=ENVPOOL_SIZE) {
-		fprintf(stderr,"%s: could not set '%s': out of memory\n",pname,var);
-		return;
-	}
-	envpool[idx]=255;
-	if(totallen%256==255) envpool[++idx]=1;
-	envpool[++idx]=0;
-	sprintf(envpool+idx,"%s=%s",var,val);
-	da_append(env,&envpool[idx]);
+	fclose(histfile);
+	return true;
 }
 
-void expand_env(StrArr env,StrArr* cmd) {
-	for(size_t i=0; i<cmd->len; i++) {
-		// TODO expand variables when they're substrings of arguments
-		if(cmd->items[i][0]=='$') {
-			if(strcmp(cmd->items[i],"$?")==0) {
-				cmd->items[i]=retbuf;
-				continue;
-			}
-			char* var=envget(env,cmd->items[i]+1);
-			if(var) {
-				cmd->items[i]=var;
-			} else {
-				for(size_t j=i+1; j<cmd->len; j++) {
-					cmd->items[j-1]=cmd->items[j];
-				}
-				cmd->len--;
-			}
+void populate_env(StrArr tmpvars) {
+	for(size_t i=0; i<tmpvars.len; i++) {
+		char* var=tmpvars.items[i];
+		char* eq=strchr(var,'=');
+		if(var+strlen(var)==eq+1) {
+			*eq='\0';
+			unsetenv(var);
+			continue;
 		}
+		putenv(var);
 	}
 }
 
@@ -535,13 +588,49 @@ void help(char* program,FILE* fd) {
 	fprintf(fd,"\n");
 	fprintf(fd,"List of builtin commands:\n");
 	fprintf(fd,"    exit           Close the shell\n");
-	fprintf(fd,"    hax            Attempt to close STDIN (bug testing)\n");
 	fprintf(fd,"    cd directory   Change CWD to directory\n");
 	fprintf(fd,"    version        Prints the version of the shell in a single line\n");
 	fprintf(fd,"    help           Print this help\n");
 }
 
-int main(int argc,char** argv,char** envp) {
+bool handle_builtin(Cmd cmd,int* status,StrArr history,char* homedir) {
+	if(strcmp(cmd.current.items[0],"exit")==0) {
+		write_history(history,homedir);
+		if(cmd.current.len==1) {
+			exit(WEXITSTATUS(*status));
+		}
+		int res=atoi(cmd.current.items[1]);
+		exit(res);
+	}
+	if(strcmp(cmd.current.items[0],"cd")==0) {
+		char* newdir;
+		if(cmd.current.len==1) {
+			newdir=getenv("HOME");
+			if(newdir==NULL || *newdir=='\0') return true;
+		} else {
+			newdir=cmd.current.items[1];
+		}
+		int res=chdir(newdir);
+		if(res<0) {
+			fprintf(stderr,"%s: cd %s: %s\n",pname,newdir,strerror(errno));
+			*status=256;
+			return true;
+		}
+		*status=0;
+		return true;
+	}
+	if(strcmp(cmd.current.items[0],"version")==0) {
+		version(pname,stdout);
+		return true;
+	}
+	if(strcmp(cmd.current.items[0],"help")==0) {
+		help(pname,stdout);
+		return true;
+	}
+	return false;
+}
+
+int main(int argc,char** argv) {
 	signal(SIGWINCH,getsize);
 	pname=argv[0];
 	char* homedir=getenv("HOME");
@@ -551,17 +640,16 @@ int main(int argc,char** argv,char** envp) {
 		homedir=malloc(PATH_MAX);
 		sprintf(homedir,"/home/%s",getpwuid(getuid())->pw_name);
 	}
-	if(pathenv==NULL) pathenv="/usr/local/sbin:/usr/local/bin:/usr/bin";
+	if(pathenv==NULL) {
+		pathenv="/usr/local/sbin:/usr/local/bin:/usr/bin";
+		setenv("PATH",pathenv,1);
+	}
 	remove_dir(pname,pname);
 	if(strlen(pname)==0 || argc<1) {
 		pname="(abysh)";
 		fprintf(stderr,"%s: warning: weird environment\n",pname);
 	}
-	StrArr env={0};
-	for(;*envp;envp++) {
-		da_append(&env,*envp);
-	}
-	char* shlvlenv=envget(env,"SHLVL");
+	char* shlvlenv=getenv("SHLVL");
 	if(shlvlenv==NULL) shlvlenv="";
 	int shlvl=atoi(shlvlenv);
 	if(shlvl<0) shlvl=0;
@@ -572,7 +660,7 @@ int main(int argc,char** argv,char** envp) {
 	shlvl++;
 	char shlvlbuf[10];
 	sprintf(shlvlbuf,"%d",shlvl);
-	envedit(&env,"SHLVL",shlvlbuf);
+	setenv("SHLVL",shlvlbuf,1);
 	StrArr history={0};
 	char command[MAX_CMD_LEN];
 	char cwd[PATH_MAX];
@@ -580,10 +668,12 @@ int main(int argc,char** argv,char** envp) {
 	char prompt[PATH_MAX*2];
 	Cmd cmd={0};
 	int status=0;
+	populate_history(&history,homedir);
 	while(1) {
 		getcwd(cwd,PATH_MAX);
-		envedit(&env,"PWD",cwd);
-		remove_dir(promptpath,cwd);
+		setenv("PWD",cwd,1);
+		if(strcmp(homedir,cwd)==0) sprintf(promptpath,"~");
+		else remove_dir(promptpath,cwd);
 		if(promptpath[0]=='\0') strcpy(promptpath,cwd);
 		snprintf(prompt,sizeof(prompt),"%s %s > ",pname,promptpath);
 		sprintf(retbuf,"%d",WEXITSTATUS(status));
@@ -596,45 +686,13 @@ int main(int argc,char** argv,char** envp) {
 		add_history(trimmed,&history);
 		if(!parse_args(&cmd,trimmed)) continue;
 		if(cmd.current.len) {
-			if(strcmp(cmd.current.items[0],"exit")==0) return 0;
-			if(strcmp(cmd.current.items[0],"hax")==0) {
-				printf("breaking your code >:)\n");
-				fclose(stdin);
-			}
-			if(strcmp(cmd.current.items[0],"cd")==0) {
-				char* newdir;
-				if(cmd.current.len==1) {
-					newdir=homedir;
-				} else {
-					newdir=cmd.current.items[1];
-				}
-				int res=chdir(newdir);
-				if(res<0) {
-					fprintf(stderr,"%s: cd %s: %s\n",pname,newdir,strerror(errno));
-					status=256;
-					continue;
-				}
-				status=0;
-				getcwd(cwd,PATH_MAX);
-				envedit(&env,"PWD",cwd);
-				continue;
-			}
-			if(strcmp(cmd.current.items[0],"version")==0) {
-				version(pname,stdout);
-				continue;
-			}
-			if(strcmp(cmd.current.items[0],"help")==0) {
-				help(pname,stdout);
-				continue;
-			}
-			expand_path(cmd.current,cwd,pathenv,pathbuf);
-			size_t env_len=env.len;
 			int lastpipe[2]={-1,-1};
 			int nextpipe[2]={-1,-1};
 			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
-				expand_path(current->current,cwd,pathenv,pathbuf);
-				env.len=env_len;
 				bool last=current->next==NULL || current->next->current.len==0;
+				if(current->current.len==0 || current->current.items[0]==NULL || current->current.items[0][0]=='\0') continue;
+				expand_path(current->current,cwd,getenv("PATH"),pathbuf);
+				if(handle_builtin(*current,&status,history,homedir)) continue;
 				if(!last) pipe(nextpipe);
 				pid_t pid=fork();
 				if(pid!=0) current->pid=pid;
@@ -650,15 +708,10 @@ int main(int argc,char** argv,char** envp) {
 						close(nextpipe[1]);
 					}
 					if(nextpipe[0]>=0) close(nextpipe[0]);
-					for(size_t i=0; i<current->tmpvars.len; i++) {
-						StrArr tmpvars=current->tmpvars;
-						da_append(&env,tmpvars.items[i]);
-					}
-					envedit(&env,"_",pathbuf);
-					expand_env(env,&current->current);
 					da_append(&current->current,NULL);
-					da_append(&env,NULL);
-					res=execve(pathbuf,current->current.items,env.items);
+					populate_env(current->tmpvars);
+					setenv("_",pathbuf,1);
+					res=execv(pathbuf,current->current.items);
 					if(res<0) {
 						fprintf(stderr,"Unknown command: %s\n",cmd.current.items[0]);
 						return 127;
@@ -702,9 +755,9 @@ int main(int argc,char** argv,char** envp) {
 				}
 				if(tlen==0) continue;
 				if(tlen+1<arglen) {
-					envedit(&env,cmd.tmpvars.items[i],cmd.tmpvars.items[i]+tlen+1);
+					setenv(cmd.tmpvars.items[i],cmd.tmpvars.items[i]+tlen+1,1);
 				} else {
-					envedit(&env,cmd.tmpvars.items[i],NULL);
+					unsetenv(cmd.tmpvars.items[i]);
 				}
 			}
 		}
