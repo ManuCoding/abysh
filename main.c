@@ -632,6 +632,7 @@ bool handle_builtin(Cmd cmd,int* status,StrArr history,char* homedir) {
 
 int main(int argc,char** argv) {
 	signal(SIGWINCH,getsize);
+	signal(SIGTTOU,SIG_IGN);
 	pname=argv[0];
 	char* homedir=getenv("HOME");
 	char* pathenv=getenv("PATH");
@@ -736,6 +737,7 @@ int main(int argc,char** argv) {
 					char dummybuf[1];
 					read(allprocspipe[0],dummybuf,1);
 					close(allprocspipe[0]);
+					tcsetpgrp(STDIN_FILENO,first);
 					while((pid=waitpid(-first,&status,0))>0) {
 						char* command="<none>";
 						for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
@@ -750,6 +752,7 @@ int main(int argc,char** argv) {
 							fprintf(stderr,"child %s (%d) terminated with signal %d (%s)\n",command,pid,signal,strsignal(signal));
 						}
 					}
+					tcsetpgrp(STDIN_FILENO,getpgid(getpid()));
 				} else {
 					if(lastpipe[0]>=0) close(lastpipe[0]);
 					if(lastpipe[1]>=0) close(lastpipe[1]);
