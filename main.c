@@ -24,15 +24,31 @@ typedef struct {
 	size_t len;
 } StrArr;
 
-typedef struct Cmd Cmd;
-
-struct Cmd {
-	Cmd* prev;
-	Cmd* next;
+typedef struct {
 	StrArr current;
 	StrArr tmpvars;
+} Cmd;
+
+typedef struct {
+	char(* items)[1024];
+	size_t cap;
+	size_t len;
+} CmdBuf;
+
+typedef struct {
+	Cmd* items;
+	size_t cap;
+	size_t len;
 	pid_t pid;
-};
+	bool finished;
+	CmdBuf buf;
+} Job;
+
+typedef struct {
+	Job* items;
+	size_t cap;
+	size_t len;
+} Jobs;
 
 #define DA_INIT_CAP 4
 #define da_append(arr,item)                                         \
@@ -49,6 +65,39 @@ struct Cmd {
         }                                                           \
         (arr)->items[(arr)->len++]=item;                            \
     } while(0)
+
+Cmd* job_newcmd(Job* job) {
+	Cmd cmd={0};
+	size_t len=job->len;
+	if(job->len>=job->cap) da_append(job,cmd);
+	else job->len++;
+	return &job->items[len];
+}
+
+Job* jobs_newjob(Jobs* jobs) {
+	Job job={0};
+	size_t len=jobs->len;
+	if(len>=jobs->cap) {
+		da_append(jobs,job);
+		return &jobs->items[len];
+	}
+	for(size_t i=0; i<len; i++) {
+		if(jobs->items[i].finished) {
+			jobs->items[i].finished=false;
+			jobs->items[i].len=0;
+			static_assert(sizeof(Job)==56);
+			return &jobs->items[i];
+		}
+	}
+	da_append(jobs,job);
+	return &jobs->items[len];
+}
+
+void job_expandbuf(Job* job) {
+	(void) job;
+	printf("%s:%d: TODO job_expandbuf\n",__FILE__,__LINE__);
+	exit(1);
+}
 
 typedef struct termios Termios;
 Termios initial_state={0};
@@ -72,30 +121,30 @@ size_t trim(char** str) {
 	return len;
 }
 
-bool parse_string(char* command,size_t* len,size_t* idx) {
+bool parse_string(CmdBuf* buf,size_t* len,size_t* idx) {
 	if(*idx>=*len) return false;
-	if(command[*idx]!='"') return false;
+	if(*buf->items[*idx]!='"') return false;
 	size_t startidx=*idx;
 	for((*idx)++; *idx<*len; (*idx)++) {
-		if(command[*idx]=='"') {
+		if(*buf->items[*idx]=='"') {
 			for(size_t i=startidx; i+1<*idx; i++) {
-				command[i]=command[i+1];
+				*buf->items[i]=*buf->items[i+1];
 			}
 			for(size_t i=(*idx)-1; i+2<*len; i++) {
-				command[i]=command[i+2];
+				*buf->items[i]=*buf->items[i+2];
 			}
 			*idx-=2;
 			--*len;
-			command[--*len]='\0';
+			*buf->items[--*len]='\0';
 			return true;
 		}
-		if(command[*idx]=='\\') {
+		if(*buf->items[*idx]=='\\') {
 			if(*idx+1<*len) {
-				if(command[*idx+1]!='"' && command[*idx+1]!='\\') continue;
+				if(*buf->items[*idx+1]!='"' && *buf->items[*idx+1]!='\\') continue;
 				for(size_t i=*idx; i+1<*len; i++) {
-					command[i]=command[i+1];
+					*buf->items[i]=*buf->items[i+1];
 				}
-				command[--*len]='\0';
+				*buf->items[--*len]='\0';
 				continue;
 			}
 			return false;
@@ -104,9 +153,12 @@ bool parse_string(char* command,size_t* len,size_t* idx) {
 	return false;
 }
 
-bool parse_args(Cmd* cmd,char* command) {
+bool parse_args(Job* job) {
+	if(job->buf.len==0) job_expandbuf(job);
 	size_t len=trim(&command);
 	size_t tlen=0;
+	job->len=0;
+	Cmd* cmd=job_newcmd(job);
 	cmd->current.len=0;
 	cmd->tmpvars.len=0;
 	char* varstart=NULL;
@@ -144,14 +196,7 @@ bool parse_args(Cmd* cmd,char* command) {
 				da_append(&cmd->current,command+i-tlen);
 				tlen=0;
 			}
-			Cmd* next=cmd->next;
-			if(next==NULL) {
-				next=malloc(sizeof(Cmd));
-				memset(next,0,sizeof(Cmd));
-				cmd->next=next;
-				next->prev=cmd;
-			}
-			cmd=next;
+			cmd=job_newcmd(job);
 			cmd->current.len=0;
 			cmd->tmpvars.len=0;
 			continue;
@@ -256,7 +301,6 @@ bool parse_args(Cmd* cmd,char* command) {
 		if(varstart) da_append(&cmd->tmpvars,varstart);
 		else da_append(&cmd->current,command+len-tlen);
 	}
-	if(cmd->next!=NULL) cmd->next->current.len=0;
 	return true;
 }
 
@@ -309,7 +353,7 @@ void getsize(int _sig) {
 	term_width=win.ws_col;
 }
 
-void readline(char* prompt,char* command,StrArr history) {
+void readline(char* prompt,CmdBuf* buf,StrArr history) {
 	static char killring[MAX_CMD_LEN]={0};
 	size_t idx=0;
 	size_t curlen=0;
@@ -667,9 +711,11 @@ int main(int argc,char** argv) {
 	char cwd[PATH_MAX];
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
-	Cmd cmd={0};
+	Jobs jobs={0};
+	Cmd curcmd={0};
 	int status=0;
 	populate_history(&history,homedir);
+#error Note to self: Job will need to keep a hold of its own command buffer, AND we need a curjob that gets passed to functions
 	while(1) {
 		getcwd(cwd,PATH_MAX);
 		setenv("PWD",cwd,1);
@@ -685,8 +731,8 @@ int main(int argc,char** argv) {
 		char* trimmed=command;
 		trim(&trimmed);
 		add_history(trimmed,&history);
-		if(!parse_args(&cmd,trimmed)) continue;
-		if(cmd.current.len) {
+		if(!parse_args(jobs_newjob(&jobs),trimmed)) continue;
+		if(curcmd.current.len) {
 			int lastpipe[2]={-1,-1};
 			int nextpipe[2]={-1,-1};
 			int allprocspipe[2];
