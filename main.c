@@ -41,7 +41,6 @@ typedef struct {
 	size_t len;
 	pid_t pid;
 	bool finished;
-	CmdBuf buf;
 } Job;
 
 typedef struct {
@@ -85,18 +84,12 @@ Job* jobs_newjob(Jobs* jobs) {
 		if(jobs->items[i].finished) {
 			jobs->items[i].finished=false;
 			jobs->items[i].len=0;
-			static_assert(sizeof(Job)==56);
+			static_assert(sizeof(Job)==32);
 			return &jobs->items[i];
 		}
 	}
 	da_append(jobs,job);
 	return &jobs->items[len];
-}
-
-void job_expandbuf(Job* job) {
-	(void) job;
-	printf("%s:%d: TODO job_expandbuf\n",__FILE__,__LINE__);
-	exit(1);
 }
 
 typedef struct termios Termios;
@@ -121,30 +114,30 @@ size_t trim(char** str) {
 	return len;
 }
 
-bool parse_string(CmdBuf* buf,size_t* len,size_t* idx) {
+bool parse_string(char* command,size_t* len,size_t* idx) {
 	if(*idx>=*len) return false;
-	if(*buf->items[*idx]!='"') return false;
+	if(command[*idx]!='"') return false;
 	size_t startidx=*idx;
 	for((*idx)++; *idx<*len; (*idx)++) {
-		if(*buf->items[*idx]=='"') {
+		if(command[*idx]=='"') {
 			for(size_t i=startidx; i+1<*idx; i++) {
-				*buf->items[i]=*buf->items[i+1];
+				command[i]=command[i+1];
 			}
 			for(size_t i=(*idx)-1; i+2<*len; i++) {
-				*buf->items[i]=*buf->items[i+2];
+				command[i]=command[i+2];
 			}
 			*idx-=2;
 			--*len;
-			*buf->items[--*len]='\0';
+			command[--*len]='\0';
 			return true;
 		}
-		if(*buf->items[*idx]=='\\') {
+		if(command[*idx]=='\\') {
 			if(*idx+1<*len) {
-				if(*buf->items[*idx+1]!='"' && *buf->items[*idx+1]!='\\') continue;
+				if(command[*idx+1]!='"' && command[*idx+1]!='\\') continue;
 				for(size_t i=*idx; i+1<*len; i++) {
-					*buf->items[i]=*buf->items[i+1];
+					command[i]=command[i+1];
 				}
-				*buf->items[--*len]='\0';
+				command[--*len]='\0';
 				continue;
 			}
 			return false;
@@ -153,8 +146,7 @@ bool parse_string(CmdBuf* buf,size_t* len,size_t* idx) {
 	return false;
 }
 
-bool parse_args(Job* job) {
-	if(job->buf.len==0) job_expandbuf(job);
+bool parse_args(Job* job,char* command) {
 	size_t len=trim(&command);
 	size_t tlen=0;
 	job->len=0;
@@ -353,7 +345,7 @@ void getsize(int _sig) {
 	term_width=win.ws_col;
 }
 
-void readline(char* prompt,CmdBuf* buf,StrArr history) {
+void readline(char* prompt,char* command,StrArr history) {
 	static char killring[MAX_CMD_LEN]={0};
 	size_t idx=0;
 	size_t curlen=0;
@@ -712,10 +704,8 @@ int main(int argc,char** argv) {
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
 	Jobs jobs={0};
-	Cmd curcmd={0};
 	int status=0;
 	populate_history(&history,homedir);
-#error Note to self: Job will need to keep a hold of its own command buffer, AND we need a curjob that gets passed to functions
 	while(1) {
 		getcwd(cwd,PATH_MAX);
 		setenv("PWD",cwd,1);
@@ -732,14 +722,16 @@ int main(int argc,char** argv) {
 		trim(&trimmed);
 		add_history(trimmed,&history);
 		if(!parse_args(jobs_newjob(&jobs),trimmed)) continue;
-		if(curcmd.current.len) {
+		if(jobs.items[0].items[0].current.len) {
 			int lastpipe[2]={-1,-1};
 			int nextpipe[2]={-1,-1};
 			int allprocspipe[2];
 			pipe(allprocspipe);
 			pid_t first=0;
-			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
-				bool last=current->next==NULL || current->next->current.len==0;
+			for(size_t i=0; i<jobs.len; i++) {
+				for(size_t j=0; j<jobs.items[i].len; j++) {
+				bool last=j+1>=jobs.items[i].len;
+				Cmd* current=&jobs.items[i].items[j];
 				if(current->current.len==0 || current->current.items[0]==NULL || current->current.items[0][0]=='\0') continue;
 				expand_path(current->current,cwd,getenv("PATH"),pathbuf);
 				if(handle_builtin(*current,&status,history,homedir)) continue;
@@ -747,7 +739,7 @@ int main(int argc,char** argv) {
 				pid_t pid=fork();
 				if(pid!=0) {
 					if(first==0) first=pid;
-					current->pid=pid;
+					jobs.items[i].pid=pid;
 				}
 				if(pid==0) {
 					int res=0;
@@ -771,7 +763,7 @@ int main(int argc,char** argv) {
 					setenv("_",pathbuf,1);
 					res=execv(pathbuf,current->current.items);
 					if(res<0) {
-						fprintf(stderr,"Unknown command: %s\n",cmd.current.items[0]);
+						fprintf(stderr,"Unknown command: %s\n",current->current.items[0]);
 						return 127;
 					}
 					fprintf(stderr,"%s: internal error\n",pname);
@@ -786,11 +778,13 @@ int main(int argc,char** argv) {
 					tcsetpgrp(STDIN_FILENO,first);
 					while((pid=waitpid(-first,&status,0))>0) {
 						char* command="<none>";
-						for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
-							if(current->pid==pid) {
+						for(size_t i=0; i<jobs.len; i++) {
+							for(size_t j=0; j<jobs.items[i].len; j++) {
+							if(jobs.items[i].pid==pid) {
 								command=current->current.items[0];
 								break;
 							}
+						}
 						}
 						if(WIFSIGNALED(status)) {
 							int signal=WTERMSIG(status);
@@ -806,7 +800,9 @@ int main(int argc,char** argv) {
 					lastpipe[1]=nextpipe[1];
 				}
 			}
-		} else if(cmd.tmpvars.len) {
+			}
+		} else if(jobs.len && jobs.items[0].items[0].tmpvars.len) {
+			Cmd cmd=jobs.items[0].items[0];
 			for(size_t i=0; i<cmd.tmpvars.len; i++) {
 				size_t tlen=0;
 				size_t arglen=strlen(cmd.tmpvars.items[i]);
