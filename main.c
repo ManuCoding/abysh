@@ -524,6 +524,7 @@ delete_char:
 void add_history(char* command,StrArr* history) {
 	if(history->len>0 && strcmp(command,history->items[history->len-1])==0) return;
 	size_t len=strlen(command);
+	if(len==0) return;
 	// TODO actually use the global histbuf buffer
 	char* copy=malloc(len+1);
 	memcpy(copy,command,len+1);
