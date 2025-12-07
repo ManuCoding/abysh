@@ -633,6 +633,7 @@ bool handle_builtin(Cmd cmd,int* status,StrArr history,char* homedir) {
 
 int main(int argc,char** argv) {
 	signal(SIGWINCH,getsize);
+	signal(SIGTTOU,SIG_IGN);
 	pname=argv[0];
 	char* homedir=getenv("HOME");
 	char* pathenv=getenv("PATH");
@@ -689,6 +690,9 @@ int main(int argc,char** argv) {
 		if(cmd.current.len) {
 			int lastpipe[2]={-1,-1};
 			int nextpipe[2]={-1,-1};
+			int allprocspipe[2];
+			pipe(allprocspipe);
+			pid_t first=0;
 			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
 				bool last=current->next==NULL || current->next->current.len==0;
 				if(current->current.len==0 || current->current.items[0]==NULL || current->current.items[0][0]=='\0') continue;
@@ -696,9 +700,17 @@ int main(int argc,char** argv) {
 				if(handle_builtin(*current,&status,history,homedir)) continue;
 				if(!last) pipe(nextpipe);
 				pid_t pid=fork();
-				if(pid!=0) current->pid=pid;
+				if(pid!=0) {
+					if(first==0) first=pid;
+					current->pid=pid;
+				}
 				if(pid==0) {
 					int res=0;
+					setpgid(0,first);
+					close(allprocspipe[0]);
+					char* funnychar="E";
+					if(last) write(allprocspipe[1],funnychar,1);
+					close(allprocspipe[1]);
 					if(lastpipe[0]>=0) {
 						dup2(lastpipe[0],STDIN_FILENO);
 						close(lastpipe[0]);
@@ -722,7 +734,12 @@ int main(int argc,char** argv) {
 				} else if(last) {
 					if(lastpipe[0]>=0) close(lastpipe[0]);
 					if(lastpipe[1]>=0) close(lastpipe[1]);
-					while((pid=wait(&status))>0) {
+					close(allprocspipe[1]);
+					char dummybuf[1];
+					read(allprocspipe[0],dummybuf,1);
+					close(allprocspipe[0]);
+					tcsetpgrp(STDIN_FILENO,first);
+					while((pid=waitpid(-first,&status,0))>0) {
 						char* command="<none>";
 						for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
 							if(current->pid==pid) {
@@ -736,6 +753,7 @@ int main(int argc,char** argv) {
 							fprintf(stderr,"child %s (%d) terminated with signal %d (%s)\n",command,pid,signal,strsignal(signal));
 						}
 					}
+					tcsetpgrp(STDIN_FILENO,getpgid(getpid()));
 				} else {
 					if(lastpipe[0]>=0) close(lastpipe[0]);
 					if(lastpipe[1]>=0) close(lastpipe[1]);

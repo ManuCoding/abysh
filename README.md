@@ -25,10 +25,10 @@ Or, if you're lazy, just run the `build.sh` script:
 - Expanding environment variables when mixed with text
 - Saving history to a file
 - Expanding ~ to the HOME environment variable
+- Capture child process signals
 
 ## Upcoming Features
 - File stream redirections
-- Capture child process signals
 - Background jobs
 - History fuzzy navigation (C-r/C-s)
 - Evaluating script files (shebang)
