@@ -58,6 +58,7 @@ char* pname;
 char retbuf[1024];
 static char histbuf[HIST_BUF_CAP];
 size_t histidx=0;
+static char pathbuf[PATH_MAX];
 
 size_t trim(char** str) {
 	size_t len=strnlen(*str,MAX_CMD_LEN);
@@ -631,13 +632,108 @@ bool handle_builtin(Cmd cmd,int* status,StrArr history,char* homedir) {
 	return false;
 }
 
+void run_command(Cmd* cmd,StrArr* history,char(*cwd)[PATH_MAX],int* status,char* homedir) {
+	if(cmd->current.len) {
+		int lastpipe[2]={-1,-1};
+		int nextpipe[2]={-1,-1};
+		int allprocspipe[2];
+		pipe(allprocspipe);
+		pid_t first=0;
+		for(Cmd* current=cmd; current && current->current.len; current=current->next) {
+			bool last=current->next==NULL || current->next->current.len==0;
+			if(current->current.len==0 || current->current.items[0]==NULL || current->current.items[0][0]=='\0') continue;
+			expand_path(current->current,*cwd,getenv("PATH"),pathbuf);
+			if(handle_builtin(*current,status,*history,homedir)) continue;
+			if(!last) pipe(nextpipe);
+			pid_t pid=fork();
+			if(pid!=0) {
+				if(first==0) first=pid;
+				current->pid=pid;
+			}
+			if(pid==0) {
+				int res=0;
+				setpgid(0,first);
+				close(allprocspipe[0]);
+				char* funnychar="E";
+				if(last) write(allprocspipe[1],funnychar,1);
+				close(allprocspipe[1]);
+				if(lastpipe[0]>=0) {
+					dup2(lastpipe[0],STDIN_FILENO);
+					close(lastpipe[0]);
+				}
+				if(lastpipe[1]>=0) close(lastpipe[1]);
+				if(nextpipe[1]>=0)  {
+					dup2(nextpipe[1],STDOUT_FILENO);
+					close(nextpipe[1]);
+				}
+				if(nextpipe[0]>=0) close(nextpipe[0]);
+				da_append(&current->current,NULL);
+				populate_env(current->tmpvars);
+				setenv("_",pathbuf,1);
+				res=execv(pathbuf,current->current.items);
+				if(res<0) {
+					fprintf(stderr,"Unknown command: %s\n",cmd->current.items[0]);
+					exit(127);
+				}
+				fprintf(stderr,"%s: internal error\n",pname);
+				exit(1);
+			} else if(last) {
+				if(lastpipe[0]>=0) close(lastpipe[0]);
+				if(lastpipe[1]>=0) close(lastpipe[1]);
+				close(allprocspipe[1]);
+				char dummybuf[1];
+				read(allprocspipe[0],dummybuf,1);
+				close(allprocspipe[0]);
+				tcsetpgrp(STDIN_FILENO,first);
+				while((pid=waitpid(-first,status,0))>0) {
+					char* command="<none>";
+					for(Cmd* current=cmd; current && current->current.len; current=current->next) {
+						if(current->pid==pid) {
+							command=current->current.items[0];
+							break;
+						}
+					}
+					if(WIFSIGNALED(*status)) {
+						int signal=WTERMSIG(*status);
+						if(signal==SIGPIPE) continue;
+						fprintf(stderr,"child %s (%d) terminated with signal %d (%s)\n",command,pid,signal,strsignal(signal));
+					}
+				}
+				tcsetpgrp(STDIN_FILENO,getpgid(getpid()));
+			} else {
+				if(lastpipe[0]>=0) close(lastpipe[0]);
+				if(lastpipe[1]>=0) close(lastpipe[1]);
+				lastpipe[0]=nextpipe[0];
+				lastpipe[1]=nextpipe[1];
+			}
+		}
+	} else if(cmd->tmpvars.len) {
+		for(size_t i=0; i<cmd->tmpvars.len; i++) {
+			size_t tlen=0;
+			size_t arglen=strlen(cmd->tmpvars.items[i]);
+			for(size_t j=0; j<arglen; j++) {
+				if(cmd->tmpvars.items[i][j]=='=') {
+					cmd->tmpvars.items[i][j]='\0';
+					break;
+				}
+				tlen++;
+			}
+			if(tlen==0) continue;
+			if(tlen+1<arglen) {
+				setenv(cmd->tmpvars.items[i],cmd->tmpvars.items[i]+tlen+1,1);
+			} else {
+				unsetenv(cmd->tmpvars.items[i]);
+			}
+		}
+	}
+}
+
 int main(int argc,char** argv) {
 	signal(SIGWINCH,getsize);
 	signal(SIGTTOU,SIG_IGN);
 	pname=argv[0];
 	char* homedir=getenv("HOME");
 	char* pathenv=getenv("PATH");
-	char pathbuf[PATH_MAX];
 	if(homedir==NULL) {
 		homedir=malloc(PATH_MAX);
 		sprintf(homedir,"/home/%s",getpwuid(getuid())->pw_name);
@@ -687,98 +783,6 @@ int main(int argc,char** argv) {
 		trim(&trimmed);
 		add_history(trimmed,&history);
 		if(!parse_args(&cmd,trimmed)) continue;
-		if(cmd.current.len) {
-			int lastpipe[2]={-1,-1};
-			int nextpipe[2]={-1,-1};
-			int allprocspipe[2];
-			pipe(allprocspipe);
-			pid_t first=0;
-			for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
-				bool last=current->next==NULL || current->next->current.len==0;
-				if(current->current.len==0 || current->current.items[0]==NULL || current->current.items[0][0]=='\0') continue;
-				expand_path(current->current,cwd,getenv("PATH"),pathbuf);
-				if(handle_builtin(*current,&status,history,homedir)) continue;
-				if(!last) pipe(nextpipe);
-				pid_t pid=fork();
-				if(pid!=0) {
-					if(first==0) first=pid;
-					current->pid=pid;
-				}
-				if(pid==0) {
-					int res=0;
-					setpgid(0,first);
-					close(allprocspipe[0]);
-					char* funnychar="E";
-					if(last) write(allprocspipe[1],funnychar,1);
-					close(allprocspipe[1]);
-					if(lastpipe[0]>=0) {
-						dup2(lastpipe[0],STDIN_FILENO);
-						close(lastpipe[0]);
-					}
-					if(lastpipe[1]>=0) close(lastpipe[1]);
-					if(nextpipe[1]>=0)  {
-						dup2(nextpipe[1],STDOUT_FILENO);
-						close(nextpipe[1]);
-					}
-					if(nextpipe[0]>=0) close(nextpipe[0]);
-					da_append(&current->current,NULL);
-					populate_env(current->tmpvars);
-					setenv("_",pathbuf,1);
-					res=execv(pathbuf,current->current.items);
-					if(res<0) {
-						fprintf(stderr,"Unknown command: %s\n",cmd.current.items[0]);
-						return 127;
-					}
-					fprintf(stderr,"%s: internal error\n",pname);
-					return 1;
-				} else if(last) {
-					if(lastpipe[0]>=0) close(lastpipe[0]);
-					if(lastpipe[1]>=0) close(lastpipe[1]);
-					close(allprocspipe[1]);
-					char dummybuf[1];
-					read(allprocspipe[0],dummybuf,1);
-					close(allprocspipe[0]);
-					tcsetpgrp(STDIN_FILENO,first);
-					while((pid=waitpid(-first,&status,0))>0) {
-						char* command="<none>";
-						for(Cmd* current=&cmd; current && current->current.len; current=current->next) {
-							if(current->pid==pid) {
-								command=current->current.items[0];
-								break;
-							}
-						}
-						if(WIFSIGNALED(status)) {
-							int signal=WTERMSIG(status);
-							if(signal==SIGPIPE) continue;
-							fprintf(stderr,"child %s (%d) terminated with signal %d (%s)\n",command,pid,signal,strsignal(signal));
-						}
-					}
-					tcsetpgrp(STDIN_FILENO,getpgid(getpid()));
-				} else {
-					if(lastpipe[0]>=0) close(lastpipe[0]);
-					if(lastpipe[1]>=0) close(lastpipe[1]);
-					lastpipe[0]=nextpipe[0];
-					lastpipe[1]=nextpipe[1];
-				}
-			}
-		} else if(cmd.tmpvars.len) {
-			for(size_t i=0; i<cmd.tmpvars.len; i++) {
-				size_t tlen=0;
-				size_t arglen=strlen(cmd.tmpvars.items[i]);
-				for(size_t j=0; j<arglen; j++) {
-					if(cmd.tmpvars.items[i][j]=='=') {
-						cmd.tmpvars.items[i][j]='\0';
-						break;
-					}
-					tlen++;
-				}
-				if(tlen==0) continue;
-				if(tlen+1<arglen) {
-					setenv(cmd.tmpvars.items[i],cmd.tmpvars.items[i]+tlen+1,1);
-				} else {
-					unsetenv(cmd.tmpvars.items[i]);
-				}
-			}
-		}
+		run_command(&cmd,&history,&cwd,&status,homedir);
 	}
 }
