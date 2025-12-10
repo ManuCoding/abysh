@@ -13,7 +13,6 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define MAX_CMD_LEN 4096
 #define VERSION "0.4.0"
 
 #define HIST_BUF_CAP (1024*1024)
@@ -33,6 +32,52 @@ struct Cmd {
 	StrArr tmpvars;
 	pid_t pid;
 };
+
+typedef struct {
+	char* s;
+	size_t cap;
+	size_t len;
+} StrBuf;
+
+#define STRBUF_INIT_CAP 1024
+void strbuf_resize(StrBuf* buf,size_t newlen) {
+	if(newlen+1>=buf->cap) {
+		if(buf->cap) buf->cap*=2;
+		else buf->cap=STRBUF_INIT_CAP;
+		char* newbuf=malloc(buf->cap);
+		if(buf->s) {
+			memcpy(newbuf,buf->s,buf->len);
+			free(buf->s);
+		}
+		buf->s=newbuf;
+	}
+	buf->len=newlen;
+}
+
+void strbuf_insertat_len(StrBuf* buf,size_t idx,char* str,size_t len) {
+	size_t prevlen=buf->len;
+	size_t newlen=buf->len+len;
+	if(idx>buf->len) idx=buf->len;
+	if(buf->s<=str && str<=buf->s+buf->len) {
+		asm("int3");
+		if(buf->s+idx<str) newlen=buf->len+idx-len;
+	}
+	strbuf_resize(buf,newlen);
+	memmove(buf->s+buf->len-idx,buf->s+prevlen-idx,prevlen-idx);
+	memmove(buf->s+idx,str,len);
+}
+
+#define strbuf_insertat(buf,idx,str)    strbuf_insertat_len((buf),(idx),(str),strlen((str)))
+#define strbuf_append_len(buf,str,len0) strbuf_insertat_len((buf),(buf)->len,(str),(len0))
+#define strbuf_append(buf,str)          strbuf_append_len((buf),(str),strlen(str))
+
+void strbuf_trim(StrBuf* buf) {
+	size_t offset=0;
+	for(; offset<buf->len && isspace(buf->s[offset]); offset++) {}
+	if(offset) strbuf_insertat(buf,offset,buf->s+offset);
+	for(; buf->len && isspace(buf->s[buf->len-1]); buf->len--) {}
+	buf->s[buf->len]='\0';
+}
 
 #define DA_INIT_CAP 4
 #define da_append(arr,item)                                         \
@@ -61,7 +106,7 @@ size_t histidx=0;
 static char pathbuf[PATH_MAX];
 
 size_t trim(char** str) {
-	size_t len=strnlen(*str,MAX_CMD_LEN);
+	size_t len=strlen(*str);
 	while(len && isspace((*str)[len-1])) {
 		len--;
 	}
@@ -69,34 +114,25 @@ size_t trim(char** str) {
 		(*str)++;
 		len--;
 	}
-	if(len<MAX_CMD_LEN) (*str)[len]='\0';
+	(*str)[len]='\0';
 	return len;
 }
 
-bool parse_string(char* command,size_t* len,size_t* idx) {
-	if(*idx>=*len) return false;
-	if(command[*idx]!='"') return false;
+bool parse_string(StrBuf* command,size_t* idx) {
+	if(*idx>=command->len) return false;
+	if(command->s[*idx]!='"') return false;
 	size_t startidx=*idx;
-	for((*idx)++; *idx<*len; (*idx)++) {
-		if(command[*idx]=='"') {
-			for(size_t i=startidx; i+1<*idx; i++) {
-				command[i]=command[i+1];
-			}
-			for(size_t i=(*idx)-1; i+2<*len; i++) {
-				command[i]=command[i+2];
-			}
+	for((*idx)++; *idx<command->len; (*idx)++) {
+		if(command->s[*idx]=='"') {
+			strbuf_insertat_len(command,startidx,command->s+startidx+1,*idx-startidx);
+			strbuf_insertat(command,*idx-1,command->s+*idx+1);
 			*idx-=2;
-			--*len;
-			command[--*len]='\0';
 			return true;
 		}
-		if(command[*idx]=='\\') {
-			if(*idx+1<*len) {
-				if(command[*idx+1]!='"' && command[*idx+1]!='\\') continue;
-				for(size_t i=*idx; i+1<*len; i++) {
-					command[i]=command[i+1];
-				}
-				command[--*len]='\0';
+		if(command->s[*idx]=='\\') {
+			if(*idx+1<command->len) {
+				if(command->s[*idx+1]!='"' && command->s[*idx+1]!='\\') continue;
+				strbuf_insertat(command,*idx,command->s+*idx+1);
 				continue;
 			}
 			return false;
@@ -105,44 +141,41 @@ bool parse_string(char* command,size_t* len,size_t* idx) {
 	return false;
 }
 
-bool parse_args(Cmd* cmd,char* command) {
-	size_t len=trim(&command);
+bool parse_args(Cmd* cmd,StrBuf* command) {
+	strbuf_trim(command);
 	size_t tlen=0;
 	cmd->current.len=0;
 	cmd->tmpvars.len=0;
-	char* varstart=NULL;
-	for(size_t i=0; i<len; i++) {
-		if(command[i]=='=') {
+	int varstart=-1;
+	for(size_t i=0; i<command->len; i++) {
+		if(command->s[i]=='=') {
 			if(cmd->current.len>0) {
 				tlen++;
 				continue;
 			}
 			if(tlen) {
-				varstart=command+i-tlen;
+				varstart=i-tlen;
 				continue;
 			}
 		}
-		if(command[i]=='\\') {
-			if(i+1>=len) {
+		if(command->s[i]=='\\') {
+			if(i+1>=command->len) {
 				tlen++;
 				continue;
 			}
-			for(size_t j=i; j+1<len; j++) {
-				command[j]=command[j+1];
-			}
-			command[--len]='\0';
+			strbuf_insertat(command,i,command->s+i+1);
 			tlen++;
 			continue;
 		}
-		if(command[i]=='#' && tlen==0) return true;
-		if(command[i]=='|') {
+		if(command->s[i]=='#' && tlen==0) return true;
+		if(command->s[i]=='|') {
 			if(tlen==0 && cmd->current.len==0) {
 				fprintf(stderr,"%s: unexpected '|'\n",pname);
 				return false;
 			}
 			if(tlen) {
-				command[i]='\0';
-				da_append(&cmd->current,command+i-tlen);
+				command->s[i]='\0';
+				da_append(&cmd->current,command->s+i-tlen);
 				tlen=0;
 			}
 			Cmd* next=cmd->next;
@@ -157,64 +190,55 @@ bool parse_args(Cmd* cmd,char* command) {
 			cmd->tmpvars.len=0;
 			continue;
 		}
-		if(command[i]=='"') {
+		if(command->s[i]=='"') {
 			size_t idx=i;
-			if(!parse_string(command,&len,&i)) {
+			if(!parse_string(command,&i)) {
 				fprintf(stderr,"%s: unexpected EOF while looking for matching '\"'\n",pname);
 				return false;
 			}
 			tlen+=i-idx+1;
 			continue;
 		}
-		if(command[i]=='~') {
-			if((tlen>0 && varstart==NULL) || (varstart && varstart-command-tlen==1)) {
+		if(command->s[i]=='~') {
+			if((tlen>0 && varstart==0) || (varstart>-1 && varstart-tlen==1)) {
 				tlen++;
 				continue;
 			}
-			if(i+1>=len || isspace(command[i+1]) || command[i+1]=='|' || command[i+1]=='/') {
+			if(i+1>=command->len || isspace(command->s[i+1]) || command->s[i+1]=='|' || command->s[i+1]=='/') {
 				char* homedir=getenv("HOME");
 				if(homedir==NULL) {
-					for(size_t j=i; j+1<len; j++) {
-						command[j]=command[j+1];
-					}
-					command[--len]='\0';
+					strbuf_insertat(command,i,command->s+i+1);
 				} else {
 					size_t homelen=strlen(homedir);
-					if(homelen+1>=MAX_CMD_LEN-i) homelen=MAX_CMD_LEN-i-1;
-					size_t totallen=len+homelen-1;
-					if(totallen+1>=MAX_CMD_LEN) totallen=MAX_CMD_LEN-1;
-					memmove(command+i+homelen,command+i+1,len-i-1);
-					memcpy(command+i,homedir,homelen);
-					tlen=homelen;
+					strbuf_insertat_len(command,i,homedir,homelen);
 					i+=homelen;
 					// FIXME this may underflow `i`, BUT IT'S FINE since it immediately gets increased
 					// actually every branch of this function should set `i` themselves and `i` would
 					// only get incremented at the end
 					i--;
-					len=totallen;
-					command[len]='\0';
 				}
 				continue;
 			}
 		}
-		if(command[i]=='$') {
+		if(command->s[i]=='$') {
 			size_t idx=i+1;
 			char* varvalue=NULL;
-			if(idx<len && command[idx]=='?') {
+			if(idx<command->len && command->s[idx]=='?') {
 				varvalue=retbuf;
 				idx++;
-			} else for(; idx<len && (isalnum(command[idx]) || command[idx]=='_') && !isspace(command[idx]); idx++) {}
+			} else for(; idx<command->len && (isalnum(command->s[idx]) || command->s[idx]=='_') && !isspace(command->s[idx]); idx++) {}
 			idx--;
 			if(idx-i==0) {
 				tlen++;
 				continue;
 			}
-			if(isdigit(*(command+i+1))) {
+			if(isdigit(command->s[i+1])) {
 				tlen++;
 				continue;
 			}
-			static char varnamebuf[MAX_CMD_LEN];
-			sprintf(varnamebuf,"%.*s=",(int)(idx-i),command+i+1);
+			// FIXME actually idrc if I use malloc at this point... prob should be smarter
+			char* varnamebuf=malloc(command->len);
+			sprintf(varnamebuf,"%.*s=",(int)(idx-i),command->s+i+1);
 			for(size_t j=cmd->tmpvars.len; varvalue==NULL && j>0; j--) {
 				if(strncmp(varnamebuf,cmd->tmpvars.items[j-1],idx-i+1)==0) {
 					varvalue=cmd->tmpvars.items[j-1]+idx-i+1;
@@ -223,30 +247,27 @@ bool parse_args(Cmd* cmd,char* command) {
 			varnamebuf[idx-i]='\0';
 			if(varvalue==NULL) varvalue=getenv(varnamebuf);
 			if(varvalue==NULL) varvalue="";
-			size_t varnamelen=strlen(varnamebuf);
 			size_t varlen=strlen(varvalue);
-			if(varlen+1>=MAX_CMD_LEN-i) varlen=MAX_CMD_LEN-i-1;
-			size_t totallen=len+varlen-1-varnamelen;
-			if(totallen+1>=MAX_CMD_LEN) totallen=MAX_CMD_LEN-1;
-			memmove(command+i+varlen,command+i+1+varnamelen,len-i-1-varnamelen);
-			memcpy(command+i,varvalue,varlen);
+			strbuf_insertat(command,i+varlen,command->s+i);
+			strbuf_insertat_len(command,i,varvalue,varlen);
 			tlen+=varlen;
 			i+=varlen;
 			i--;
-			len=totallen;
-			command[len]='\0';
+			free(varnamebuf);
 			continue;
 		}
-		if(isspace(command[i])) {
+		if(isspace(command->s[i])) {
 			if(tlen) {
-				command[i]='\0';
-				if(varstart) {
-					da_append(&cmd->tmpvars,varstart);
-					varstart=NULL;
+				command->s[i]='\0';
+				if(varstart>-1) {
+					fprintf(stderr,"TODO: actually allocate and stuff\n");
+					asm("int3");
+					da_append(&cmd->tmpvars,command->s+varstart);
+					varstart=-1;
 					tlen=0;
 					continue;
 				}
-				da_append(&cmd->current,command+i-tlen);
+				da_append(&cmd->current,command->s+i-tlen);
 				tlen=0;
 			}
 		} else {
@@ -254,8 +275,8 @@ bool parse_args(Cmd* cmd,char* command) {
 		}
 	}
 	if(tlen) {
-		if(varstart) da_append(&cmd->tmpvars,varstart);
-		else da_append(&cmd->current,command+len-tlen);
+		if(varstart) da_append(&cmd->tmpvars,command->s+varstart);
+		else da_append(&cmd->current,command->s+command->len-tlen);
 	}
 	if(cmd->next!=NULL) cmd->next->current.len=0;
 	return true;
@@ -310,8 +331,8 @@ void getsize(int _sig) {
 	term_width=win.ws_col;
 }
 
-void readline(char* prompt,char* command,StrArr history) {
-	static char killring[MAX_CMD_LEN]={0};
+void readline(char* prompt,StrBuf* command,StrArr history) {
+	static StrBuf killring={0};
 	size_t idx=0;
 	size_t curlen=0;
 	size_t hist_idx=history.len;
@@ -324,9 +345,9 @@ void readline(char* prompt,char* command,StrArr history) {
 	raw.c_cc[VMIN]=1;
 	raw.c_cc[VTIME]=0;
 	printf("%s",prompt);
-	command[0]='\0';
+	strbuf_resize(command,0);
 	tcsetattr(keys_fd,TCSAFLUSH,&raw);
-	unsigned char ch=0;
+	char ch=0;
 	while(ch!='\n') {
 		ch=getchar();
 got_char:
@@ -349,12 +370,12 @@ prev_hist:
 								// TODO search backwards through history for a match of current command
 							}
 							if(history.items[--hist_idx]) {
-								memcpy(command,history.items[hist_idx],MAX_CMD_LEN);
-								curlen=strlen(command);
+								memcpy(command->s,history.items[hist_idx],command->len);
+								curlen=command->len;
 								idx=curlen;
 							}
 							edited=false;
-							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command);
+							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command->s);
 						}
 						break;
 					case 'B':
@@ -368,22 +389,22 @@ next_hist:
 								// TODO search backwards through history for a match of current command
 							}
 							if(++hist_idx<history.len && history.items[hist_idx]) {
-								memcpy(command,history.items[hist_idx],MAX_CMD_LEN);
-								curlen=strlen(command);
+								memcpy(command->s,history.items[hist_idx],command->len);
+								curlen=command->len;
 								idx=curlen;
 							} else {
 								curlen=0;
 								idx=0;
-								command[0]='\0';
+								strbuf_resize(command,0);
 							}
 							edited=false;
-							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command);
+							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command->s);
 						}
 						break;
 					case 'C':
 move_right:
 						if(idx<curlen) {
-							printf("%c",command[idx]);
+							printf("%c",command->s[idx]);
 							idx++;
 						}
 						break;
@@ -403,7 +424,7 @@ delete_char:
 								command[i]=command[i+1];
 							}
 							curlen--;
-							printf("\x1b""7%.*s \x1b""8",(int)(curlen-idx),command+idx);
+							printf("\x1b""7%.*s \x1b""8",(int)(curlen-idx),command->s+idx);
 						}
 						break;
 					default:
@@ -423,7 +444,8 @@ delete_char:
 			case 'D'-'@':
 				if(curlen>0) goto delete_char;
 				// FIXME very hacky way of quitting :)
-				sprintf(command,"exit");
+				strbuf_resize(command,0);
+				strbuf_append(command,"exit");
 				curlen=4;
 				ch='\n';
 				break;
@@ -438,24 +460,23 @@ delete_char:
 			case 'H'-'@':
 			case 127: // Backspace
 				if(idx>0) {
-					for(size_t i=idx-1; i<curlen && i+1<MAX_CMD_LEN; i++) {
-						command[i]=command[i+1];
-					}
+					strbuf_insertat_len(command,idx,command->s+idx+1,curlen-1);
 					curlen--;
-					printf("\x1b[D\x1b""7%.*s \x1b""8",(int)(curlen-idx+1),command+idx-1);
+					printf("\x1b[D\x1b""7%.*s \x1b""8",(int)(curlen-idx+1),command->s+idx-1);
 					idx--;
 				}
 				break;
 			case 'K'-'@':
 				if(idx>=curlen) break;
-				sprintf(killring,"%.*s",(int)(curlen-idx),command+idx);
+				strbuf_resize(&killring,0);
+				strbuf_append_len(&killring,command->s+idx,curlen-idx);
 				for(size_t i=idx; i<curlen; i++) printf(" ");
 				for(size_t i=idx; i<curlen; i++) printf("\b");
 				curlen=idx;
-				command[curlen]='\0';
+				strbuf_resize(command,curlen);
 				break;
 			case 'L'-'@':
-				printf("\x1b[H\x1b[2J%s%*s",prompt,(int)curlen,command);
+				printf("\x1b[H\x1b[2J%s%*s",prompt,(int)curlen,command->s);
 				for(size_t i=curlen; i>idx; i--) {
 					printf("\b");
 				}
@@ -468,58 +489,45 @@ delete_char:
 				break;
 			case 'U'-'@':
 				if(idx==0) break;
-				sprintf(killring,"%.*s",(int)idx,command);
+				strbuf_resize(&killring,0);
+				strbuf_append_len(&killring,command->s,idx);
 				for(size_t i=0; i<idx; i++) printf("\b");
-				printf("%.*s",(int)(curlen-idx),command+idx);
-				for(size_t i=0; i<idx; i++) {
-					command[i]=command[i+idx];
-					printf(" ");
-				}
+				printf("%.*s",(int)(curlen-idx),command->s+idx);
+				for(size_t i=0; i<idx; i++) printf(" ");
 				for(size_t i=0; i<curlen; i++) printf("\b");
+				strbuf_insertat(command,0,command->s+idx);
 				fflush(stdout);
 				curlen-=idx;
 				idx=0;
 				break;
 			case 'Y'-'@':
-				size_t klen=strlen(killring);
+				size_t klen=killring.len;
 				if(klen==0) break;
-				if(klen+curlen>=MAX_CMD_LEN) klen=MAX_CMD_LEN-curlen-1;
-				printf("%.*s%s",(int)klen,killring,command+idx);
-				for(size_t i=idx; i<curlen && i+klen+1<MAX_CMD_LEN; i++) {
-					command[i+klen]=command[i];
-					printf("\b");
-				}
-				for(size_t i=0; i<klen; i++) {
-					command[i+idx]=killring[i];
-				}
+				printf("%.*s%s",(int)klen,killring.s,command->s+idx);
+				for(size_t i=idx; i<curlen; i++) printf("\b");
+				strbuf_insertat_len(command,idx,killring.s,klen);
 				fflush(stdout);
 				curlen+=klen;
 				idx+=klen;
 				break;
 			default:
 				if(ch<' ') continue;
-				if(idx+1>=MAX_CMD_LEN) continue;
 				if(idx<curlen) {
-					printf(" %.*s\b",(int)(curlen-idx),command+idx);
-					for(size_t i=curlen; i>idx; i--) {
-						command[i]=command[i-1];
-						printf("\b");
-					}
+					printf(" %.*s\b",(int)(curlen-idx),command->s+idx);
+					for(size_t i=curlen; i>idx; i--) printf("\b");
 				}
 				curlen++;
-				if(curlen>=MAX_CMD_LEN) curlen=MAX_CMD_LEN-1;
 				printf("%c",ch);
 				fflush(stdout);
-				command[idx]=ch;
+				strbuf_insertat_len(command,idx,&ch,1);
 				edited=true;
 				idx++;
 		}
-		if(curlen<MAX_CMD_LEN) command[curlen]='\0';
-		else curlen--;
+		strbuf_resize(command,curlen);
 	}
 	for(size_t i=(prompt_len+curlen-idx)/term_width+1; i>0; i--) printf("\r\n");
 	tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
-	command[MAX_CMD_LEN-1]='\0';
+	strbuf_resize(command,curlen);
 }
 
 void add_history(char* command,StrArr* history) {
@@ -760,7 +768,7 @@ int main(int argc,char** argv) {
 	sprintf(shlvlbuf,"%d",shlvl);
 	setenv("SHLVL",shlvlbuf,1);
 	StrArr history={0};
-	char command[MAX_CMD_LEN];
+	StrBuf command={0};
 	char cwd[PATH_MAX];
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
@@ -778,11 +786,10 @@ int main(int argc,char** argv) {
 		if(WEXITSTATUS(status)>0) {
 			sprintf(prompt+strlen(pname)+strlen(promptpath)+2,"[%s] > ",retbuf);
 		}
-		readline(prompt,command,history);
-		char* trimmed=command;
-		trim(&trimmed);
-		add_history(trimmed,&history);
-		if(!parse_args(&cmd,trimmed)) continue;
+		readline(prompt,&command,history);
+		strbuf_trim(&command);
+		add_history(command.s,&history);
+		if(!parse_args(&cmd,&command)) continue;
 		run_command(&cmd,&history,&cwd,&status,homedir);
 	}
 }
