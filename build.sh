@@ -1,5 +1,5 @@
 #!/bin/bash
 
 set -xe
-gcc -Wall -Wextra -ggdb -o abysh main.c
+gcc -ftabstop=1 -Wall -Wextra -ggdb -o abysh main.c
 

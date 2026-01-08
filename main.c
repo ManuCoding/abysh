@@ -24,15 +24,18 @@ typedef struct {
 	size_t len;
 } StrArr;
 
-typedef struct Cmd Cmd;
-
-struct Cmd {
-	Cmd* prev;
-	Cmd* next;
+typedef struct {
 	StrArr current;
 	StrArr tmpvars;
 	pid_t pid;
-};
+} Cmd;
+
+typedef struct {
+	Cmd* items;
+	size_t cap;
+	size_t len;
+	size_t longest;
+} Cmds;
 
 #define DA_INIT_CAP 4
 #define da_append(arr,item)                                         \
@@ -105,11 +108,16 @@ bool parse_string(char* command,size_t* len,size_t* idx) {
 	return false;
 }
 
-bool parse_args(Cmd* cmd,char* command) {
+bool parse_args(Cmds* cmds,char* command) {
 	size_t len=trim(&command);
 	size_t tlen=0;
+	if(cmds->longest==0) {
+		da_append(cmds,(Cmd) {0});
+		cmds->longest=1;
+	}
+	Cmd* cmd=&cmds->items[0];
 	cmd->current.len=0;
-	cmd->tmpvars.len=0;
+	size_t curcmd=0;
 	char* varstart=NULL;
 	for(size_t i=0; i<len; i++) {
 		if(command[i]=='=') {
@@ -145,14 +153,12 @@ bool parse_args(Cmd* cmd,char* command) {
 				da_append(&cmd->current,command+i-tlen);
 				tlen=0;
 			}
-			Cmd* next=cmd->next;
-			if(next==NULL) {
-				next=malloc(sizeof(Cmd));
-				memset(next,0,sizeof(Cmd));
-				cmd->next=next;
-				next->prev=cmd;
+			curcmd++;
+			if(cmds->longest<=curcmd) {
+				cmds->longest++;
+				da_append(cmds,(Cmd) {0});
 			}
-			cmd=next;
+			cmd=&cmds->items[curcmd];
 			cmd->current.len=0;
 			cmd->tmpvars.len=0;
 			continue;
@@ -257,7 +263,6 @@ bool parse_args(Cmd* cmd,char* command) {
 		if(varstart) da_append(&cmd->tmpvars,varstart);
 		else da_append(&cmd->current,command+len-tlen);
 	}
-	if(cmd->next!=NULL) cmd->next->current.len=0;
 	return true;
 }
 
@@ -632,15 +637,16 @@ bool handle_builtin(Cmd cmd,int* status,StrArr history,char* homedir) {
 	return false;
 }
 
-void run_command(Cmd* cmd,StrArr* history,char(*cwd)[PATH_MAX],int* status,char* homedir) {
-	if(cmd->current.len) {
+void run_command(Cmds* cmds,StrArr* history,char(*cwd)[PATH_MAX],int* status,char* homedir) {
+	if(cmds->len && cmds->items[0].current.len) {
 		int lastpipe[2]={-1,-1};
 		int nextpipe[2]={-1,-1};
 		int allprocspipe[2];
 		pipe(allprocspipe);
 		pid_t first=0;
-		for(Cmd* current=cmd; current && current->current.len; current=current->next) {
-			bool last=current->next==NULL || current->next->current.len==0;
+		for(size_t i=0; i<cmds->len; i++) {
+			bool last=i+1>=cmds->len;
+			Cmd* current=&cmds->items[i];
 			if(current->current.len==0 || current->current.items[0]==NULL || current->current.items[0][0]=='\0') continue;
 			expand_path(current->current,*cwd,getenv("PATH"),pathbuf);
 			if(handle_builtin(*current,status,*history,homedir)) continue;
@@ -672,7 +678,7 @@ void run_command(Cmd* cmd,StrArr* history,char(*cwd)[PATH_MAX],int* status,char*
 				setenv("_",pathbuf,1);
 				res=execv(pathbuf,current->current.items);
 				if(res<0) {
-					fprintf(stderr,"Unknown command: %s\n",cmd->current.items[0]);
+					fprintf(stderr,"Unknown command: %s\n",current->current.items[0]);
 					exit(127);
 				}
 				fprintf(stderr,"%s: internal error\n",pname);
@@ -687,7 +693,8 @@ void run_command(Cmd* cmd,StrArr* history,char(*cwd)[PATH_MAX],int* status,char*
 				tcsetpgrp(STDIN_FILENO,first);
 				while((pid=waitpid(-first,status,0))>0) {
 					char* command="<none>";
-					for(Cmd* current=cmd; current && current->current.len; current=current->next) {
+					for(size_t i=0; i<cmds->len; i++) {
+						Cmd* current=&cmds->items[i];
 						if(current->pid==pid) {
 							command=current->current.items[0];
 							break;
@@ -707,22 +714,22 @@ void run_command(Cmd* cmd,StrArr* history,char(*cwd)[PATH_MAX],int* status,char*
 				lastpipe[1]=nextpipe[1];
 			}
 		}
-	} else if(cmd->tmpvars.len) {
-		for(size_t i=0; i<cmd->tmpvars.len; i++) {
+	} else if(cmds->len && cmds->items[0].tmpvars.len) {
+		for(size_t i=0; i<cmds->items[0].tmpvars.len; i++) {
 			size_t tlen=0;
-			size_t arglen=strlen(cmd->tmpvars.items[i]);
+			size_t arglen=strlen(cmds->items[0].tmpvars.items[i]);
 			for(size_t j=0; j<arglen; j++) {
-				if(cmd->tmpvars.items[i][j]=='=') {
-					cmd->tmpvars.items[i][j]='\0';
+				if(cmds->items[0].tmpvars.items[i][j]=='=') {
+					cmds->items[0].tmpvars.items[i][j]='\0';
 					break;
 				}
 				tlen++;
 			}
 			if(tlen==0) continue;
 			if(tlen+1<arglen) {
-				setenv(cmd->tmpvars.items[i],cmd->tmpvars.items[i]+tlen+1,1);
+				setenv(cmds->items[0].tmpvars.items[i],cmds->items[0].tmpvars.items[i]+tlen+1,1);
 			} else {
-				unsetenv(cmd->tmpvars.items[i]);
+				unsetenv(cmds->items[0].tmpvars.items[i]);
 			}
 		}
 	}
@@ -764,7 +771,7 @@ int main(int argc,char** argv) {
 	char cwd[PATH_MAX];
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
-	Cmd cmd={0};
+	Cmds cmds={0};
 	int status=0;
 	populate_history(&history,homedir);
 	while(1) {
@@ -782,7 +789,7 @@ int main(int argc,char** argv) {
 		char* trimmed=command;
 		trim(&trimmed);
 		add_history(trimmed,&history);
-		if(!parse_args(&cmd,trimmed)) continue;
-		run_command(&cmd,&history,&cwd,&status,homedir);
+		if(!parse_args(&cmds,trimmed)) continue;
+		run_command(&cmds,&history,&cwd,&status,homedir);
 	}
 }
