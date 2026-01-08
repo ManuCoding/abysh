@@ -25,6 +25,12 @@ typedef struct {
 } StrArr;
 
 typedef struct {
+	char* items;
+	size_t cap;
+	size_t len;
+} StrBuf;
+
+typedef struct {
 	StrArr current;
 	StrArr tmpvars;
 	pid_t pid;
@@ -76,194 +82,218 @@ size_t trim(char** str) {
 	return len;
 }
 
-bool parse_string(char* command,size_t* len,size_t* idx) {
-	if(*idx>=*len) return false;
+bool parse_string(char* command,size_t len,size_t* idx,StrBuf* parsedcmd) {
+	if(*idx>=len) return false;
 	if(command[*idx]!='"') return false;
-	size_t startidx=*idx;
-	for((*idx)++; *idx<*len; (*idx)++) {
+	for((*idx)++; *idx<len; (*idx)++) {
 		if(command[*idx]=='"') {
-			for(size_t i=startidx; i+1<*idx; i++) {
-				command[i]=command[i+1];
-			}
-			for(size_t i=(*idx)-1; i+2<*len; i++) {
-				command[i]=command[i+2];
-			}
-			*idx-=2;
-			--*len;
-			command[--*len]='\0';
 			return true;
 		}
 		if(command[*idx]=='\\') {
-			if(*idx+1<*len) {
-				if(command[*idx+1]!='"' && command[*idx+1]!='\\') continue;
-				for(size_t i=*idx; i+1<*len; i++) {
-					command[i]=command[i+1];
+			if(*idx+1<len) {
+				if(command[*idx+1]=='"' || command[*idx+1]=='\\') {
+					da_append(parsedcmd,command[++*idx]);
+					continue;
 				}
-				command[--*len]='\0';
+				da_append(parsedcmd,'\\');
 				continue;
 			}
 			return false;
 		}
+		da_append(parsedcmd,command[*idx]);
 	}
 	return false;
 }
 
-bool parse_args(Cmds* cmds,char* command) {
+bool parse_args(Cmds* cmds,char* command,StrBuf* parsedcmd) {
 	size_t len=trim(&command);
 	size_t tlen=0;
-	if(cmds->longest==0) {
-		da_append(cmds,(Cmd) {0});
-		cmds->longest=1;
-	}
-	Cmd* cmd=&cmds->items[0];
-	cmd->current.len=0;
-	size_t curcmd=0;
+	parsedcmd->len=0;
 	char* varstart=NULL;
+	size_t argstart=0;
+	struct {
+		int* items;
+		size_t cap;
+		size_t len;
+	} indexes={0};
+	bool parsingenv=true;
+	bool result=true;
 	for(size_t i=0; i<len; i++) {
 		if(command[i]=='=') {
-			if(cmd->current.len>0) {
+			if(!parsingenv) {
 				tlen++;
-				continue;
+				goto addchr;
 			}
 			if(tlen) {
 				varstart=command+i-tlen;
-				continue;
+				goto addchr;
 			}
 		}
 		if(command[i]=='\\') {
 			if(i+1>=len) {
 				tlen++;
-				continue;
+				goto addchr;
 			}
-			for(size_t j=i; j+1<len; j++) {
-				command[j]=command[j+1];
-			}
-			command[--len]='\0';
+			da_append(parsedcmd,command[++i]);
 			tlen++;
 			continue;
 		}
-		if(command[i]=='#' && tlen==0) return true;
+		if(command[i]=='#' && tlen==0) break;
 		if(command[i]=='|') {
-			if(tlen==0 && cmd->current.len==0) {
+			if(tlen==0 && parsingenv) {
 				fprintf(stderr,"%s: unexpected '|'\n",pname);
-				return false;
+				result=false;
+				break;
 			}
 			if(tlen) {
-				command[i]='\0';
-				da_append(&cmd->current,command+i-tlen);
+				da_append(parsedcmd,'\0');
+				da_append(&indexes,(int)argstart);
+				argstart=parsedcmd->len;
 				tlen=0;
 			}
-			curcmd++;
-			if(cmds->longest<=curcmd) {
-				cmds->longest++;
-				da_append(cmds,(Cmd) {0});
-			}
-			cmd=&cmds->items[curcmd];
-			cmd->current.len=0;
-			cmd->tmpvars.len=0;
+			da_append(&indexes,-2);
+			parsingenv=true;
 			continue;
 		}
 		if(command[i]=='"') {
-			size_t idx=i;
-			if(!parse_string(command,&len,&i)) {
+			size_t lastidx=i;
+			if(!parse_string(command,len,&lastidx,parsedcmd)) {
 				fprintf(stderr,"%s: unexpected EOF while looking for matching '\"'\n",pname);
 				return false;
 			}
-			tlen+=i-idx+1;
+			tlen+=lastidx-i-1;
+			i=lastidx;
 			continue;
 		}
 		if(command[i]=='~') {
 			if((tlen>0 && varstart==NULL) || (varstart && varstart-command-tlen==1)) {
 				tlen++;
-				continue;
+				goto addchr;
 			}
 			if(i+1>=len || isspace(command[i+1]) || command[i+1]=='|' || command[i+1]=='/') {
 				char* homedir=getenv("HOME");
-				if(homedir==NULL) {
-					for(size_t j=i; j+1<len; j++) {
-						command[j]=command[j+1];
-					}
-					command[--len]='\0';
-				} else {
+				if(homedir!=NULL) {
 					size_t homelen=strlen(homedir);
-					if(homelen+1>=MAX_CMD_LEN-i) homelen=MAX_CMD_LEN-i-1;
-					size_t totallen=len+homelen-1;
-					if(totallen+1>=MAX_CMD_LEN) totallen=MAX_CMD_LEN-1;
-					memmove(command+i+homelen,command+i+1,len-i-1);
-					memcpy(command+i,homedir,homelen);
-					tlen=homelen;
-					i+=homelen;
-					// FIXME this may underflow `i`, BUT IT'S FINE since it immediately gets increased
-					// actually every branch of this function should set `i` themselves and `i` would
-					// only get incremented at the end
-					i--;
-					len=totallen;
-					command[len]='\0';
+					for(size_t i=0; i<homelen; i++) {
+						da_append(parsedcmd,homedir[i]);
+					}
+					tlen+=homelen;
+					continue;
 				}
-				continue;
+				goto addchr;
 			}
 		}
 		if(command[i]=='$') {
-			size_t idx=i+1;
-			char* varvalue=NULL;
-			if(idx<len && command[idx]=='?') {
-				varvalue=retbuf;
-				idx++;
-			} else for(; idx<len && (isalnum(command[idx]) || command[idx]=='_') && !isspace(command[idx]); idx++) {}
-			idx--;
-			if(idx-i==0) {
-				tlen++;
-				continue;
-			}
-			if(isdigit(*(command+i+1))) {
-				tlen++;
-				continue;
-			}
-			static char varnamebuf[MAX_CMD_LEN];
-			sprintf(varnamebuf,"%.*s=",(int)(idx-i),command+i+1);
-			for(size_t j=cmd->tmpvars.len; varvalue==NULL && j>0; j--) {
-				if(strncmp(varnamebuf,cmd->tmpvars.items[j-1],idx-i+1)==0) {
-					varvalue=cmd->tmpvars.items[j-1]+idx-i+1;
+			size_t varend=i+1;
+			if(varend<len && command[varend]=='?') {
+				for(size_t j=0; retbuf[j]!='\0'; j++) {
+					da_append(parsedcmd,retbuf[j]);
 				}
+				i++;
+				continue;
 			}
-			varnamebuf[idx-i]='\0';
-			if(varvalue==NULL) varvalue=getenv(varnamebuf);
-			if(varvalue==NULL) varvalue="";
-			size_t varnamelen=strlen(varnamebuf);
-			size_t varlen=strlen(varvalue);
-			if(varlen+1>=MAX_CMD_LEN-i) varlen=MAX_CMD_LEN-i-1;
-			size_t totallen=len+varlen-1-varnamelen;
-			if(totallen+1>=MAX_CMD_LEN) totallen=MAX_CMD_LEN-1;
-			memmove(command+i+varlen,command+i+1+varnamelen,len-i-1-varnamelen);
-			memcpy(command+i,varvalue,varlen);
-			tlen+=varlen;
-			i+=varlen;
-			i--;
-			len=totallen;
-			command[len]='\0';
+			while(varend<len && isalnum(command[varend])) varend++;
+			if(varend==i+1) {
+				tlen++;
+				goto addchr;
+			}
+			bool incmd=(varstart==NULL);
+			bool found=false;
+			size_t parsedlen=parsedcmd->len;
+			for(size_t j=indexes.len; j>0 && indexes.items[j-1]!=-2; j--) {
+				if(indexes.items[j-1]==-1) {
+					incmd=false;
+					continue;
+				}
+				if(incmd) continue;
+				char* eq=strchr(parsedcmd->items+indexes.items[j-1],'=');
+				if(eq==NULL) continue;
+				if(eq-parsedcmd->items!=(int)(varend-i-1)) continue;
+				if(strncmp(parsedcmd->items+indexes.items[j-1],command+i+1,varend-i-1)!=0) continue;
+				for(size_t k=indexes.items[j-1]+varend-i; k<parsedlen && parsedcmd->items[k]!='\0'; k++) {
+					da_append(parsedcmd,parsedcmd->items[k]);
+					tlen++;
+				}
+				found=true;
+				break;
+			}
+			if(found) {
+				i=varend-1;
+				continue;
+			}
+			for(size_t j=i+1; j<varend; j++) {
+				da_append(parsedcmd,command[j]);
+			}
+			da_append(parsedcmd,'\0');
+			char* var=getenv(parsedcmd->items+parsedlen);
+			parsedcmd->len=parsedlen;
+			if(var==NULL) continue;
+			size_t varlen=strlen(var);
+			for(size_t j=0; j<varlen; j++) {
+				da_append(parsedcmd,var[j]);
+				tlen++;
+			}
+			i=varend-1;
 			continue;
 		}
 		if(isspace(command[i])) {
-			if(tlen) {
-				command[i]='\0';
-				if(varstart) {
-					da_append(&cmd->tmpvars,varstart);
-					varstart=NULL;
-					tlen=0;
-					continue;
-				}
-				da_append(&cmd->current,command+i-tlen);
-				tlen=0;
+			if(tlen==0) continue;
+			if(varstart) {
+				varstart=NULL;
+			} else {
+				if(parsingenv) da_append(&indexes,-1);
+				parsingenv=false;
 			}
+			da_append(&indexes,argstart);
+			da_append(parsedcmd,'\0');
+			argstart=parsedcmd->len;
+			tlen=0;
+			continue;
 		} else {
 			tlen++;
 		}
+addchr:
+		da_append(parsedcmd,command[i]);
 	}
-	if(tlen) {
-		if(varstart) da_append(&cmd->tmpvars,varstart);
-		else da_append(&cmd->current,command+len-tlen);
+	// FIXME this logic is kinda messed up, BUT IT WORKS
+	while(tlen) {
+		tlen=0;
+		da_append(parsedcmd,'\0');
+		if(parsingenv && varstart) da_append(&indexes,(int)(varstart-command));
+		if(parsingenv) da_append(&indexes,-1);
+		if(varstart) break;
+		da_append(&indexes,(int)argstart);
 	}
-	return true;
+	parsingenv=true;
+	if(cmds->longest==0) {
+		da_append(cmds,(Cmd) {0});
+		cmds->longest=1;
+	}
+	cmds->len=1;
+	Cmd* cmd=&cmds->items[0];
+	cmd->current.len=0;
+	cmd->tmpvars.len=0;
+	for(size_t curcmd=0,i=0; i<indexes.len; i++) {
+		if(indexes.items[i]==-1) {
+			parsingenv=false;
+			continue;
+		}
+		if(indexes.items[i]==-2) {
+			curcmd++;
+			while(curcmd>=cmds->longest) {
+				da_append(cmds,(Cmd) {0});
+				cmds->longest++;
+			}
+			cmd=&cmds->items[curcmd];
+			cmd->current.len=0;
+			cmd->tmpvars.len=0;
+			parsingenv=true;
+			continue;
+		}
+		if(parsingenv) da_append(&cmd->tmpvars,parsedcmd->items+indexes.items[i]);
+		else da_append(&cmd->current,parsedcmd->items+indexes.items[i]);
+	}
+	return result;
 }
 
 void expand_path(StrArr cmd,char* cwd,char* pathenv,char* pathbuf) {
@@ -315,8 +345,8 @@ void getsize(int _sig) {
 	term_width=win.ws_col;
 }
 
-void readline(char* prompt,char* command,StrArr history) {
-	static char killring[MAX_CMD_LEN]={0};
+void readline(char* prompt,StrBuf* command,StrArr history) {
+	static StrBuf killring={0};
 	size_t idx=0;
 	size_t curlen=0;
 	size_t hist_idx=history.len;
@@ -329,7 +359,7 @@ void readline(char* prompt,char* command,StrArr history) {
 	raw.c_cc[VMIN]=1;
 	raw.c_cc[VTIME]=0;
 	printf("%s",prompt);
-	command[0]='\0';
+	command->len=0;
 	tcsetattr(keys_fd,TCSAFLUSH,&raw);
 	unsigned char ch=0;
 	while(ch!='\n') {
@@ -354,12 +384,16 @@ prev_hist:
 								// TODO search backwards through history for a match of current command
 							}
 							if(history.items[--hist_idx]) {
-								memcpy(command,history.items[hist_idx],MAX_CMD_LEN);
-								curlen=strlen(command);
+								command->len=0;
+								size_t cmdlen=strlen(history.items[hist_idx]);
+								for(size_t i=0; i<cmdlen; i++) {
+									da_append(command,history.items[hist_idx][i]);
+								}
+								curlen=command->len;
 								idx=curlen;
 							}
 							edited=false;
-							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command);
+							printf("\r\x1b[K%s%.*s",prompt,(int)curlen,command->items);
 						}
 						break;
 					case 'B':
@@ -373,22 +407,26 @@ next_hist:
 								// TODO search backwards through history for a match of current command
 							}
 							if(++hist_idx<history.len && history.items[hist_idx]) {
-								memcpy(command,history.items[hist_idx],MAX_CMD_LEN);
-								curlen=strlen(command);
+								command->len=0;
+								size_t cmdlen=strlen(history.items[hist_idx]);
+								for(size_t i=0; i<cmdlen; i++) {
+									da_append(command,history.items[hist_idx][i]);
+								}
+								curlen=command->len;
 								idx=curlen;
 							} else {
 								curlen=0;
 								idx=0;
-								command[0]='\0';
+								command->len=0;
 							}
 							edited=false;
-							printf("\r\x1b[K%s%*s",prompt,(int)curlen,command);
+							printf("\r\x1b[K%s%.*s",prompt,(int)curlen,command->items);
 						}
 						break;
 					case 'C':
 move_right:
 						if(idx<curlen) {
-							printf("%c",command[idx]);
+							printf("%c",command->items[idx]);
 							idx++;
 						}
 						break;
@@ -405,10 +443,11 @@ move_left:
 delete_char:
 						if(idx<curlen) {
 							for(size_t i=idx; i+1<curlen; i++) {
-								command[i]=command[i+1];
+								command->items[i]=command->items[i+1];
 							}
 							curlen--;
-							printf("\x1b""7%.*s \x1b""8",(int)(curlen-idx),command+idx);
+							command->len=curlen;
+							printf("\x1b""7%.*s \x1b""8",(int)(curlen-idx),command->items+idx);
 						}
 						break;
 					default:
@@ -427,8 +466,11 @@ delete_char:
 				break;
 			case 'D'-'@':
 				if(curlen>0) goto delete_char;
+				command->len=0;
 				// FIXME very hacky way of quitting :)
-				sprintf(command,"exit");
+				for(size_t i=0; i<4; i++) {
+					da_append(command,"exit"[i]);
+				}
 				curlen=4;
 				ch='\n';
 				break;
@@ -443,24 +485,28 @@ delete_char:
 			case 'H'-'@':
 			case 127: // Backspace
 				if(idx>0) {
-					for(size_t i=idx-1; i<curlen && i+1<MAX_CMD_LEN; i++) {
-						command[i]=command[i+1];
+					for(size_t i=idx-1; i+1<curlen; i++) {
+						command->items[i]=command->items[i+1];
 					}
 					curlen--;
-					printf("\x1b[D\x1b""7%.*s \x1b""8",(int)(curlen-idx+1),command+idx-1);
+					command->len--;
+					printf("\x1b[D\x1b""7%.*s \x1b""8",(int)(curlen-idx+1),command->items+idx-1);
 					idx--;
 				}
 				break;
 			case 'K'-'@':
 				if(idx>=curlen) break;
-				sprintf(killring,"%.*s",(int)(curlen-idx),command+idx);
-				for(size_t i=idx; i<curlen; i++) printf(" ");
+				killring.len=0;
+				for(size_t i=idx; i<curlen; i++) {
+					da_append(&killring,command->items[i]);
+					printf(" ");
+				}
 				for(size_t i=idx; i<curlen; i++) printf("\b");
 				curlen=idx;
-				command[curlen]='\0';
+				command->len=idx;
 				break;
 			case 'L'-'@':
-				printf("\x1b[H\x1b[2J%s%*s",prompt,(int)curlen,command);
+				printf("\x1b[H\x1b[2J%s%.*s",prompt,(int)curlen,command->items);
 				for(size_t i=curlen; i>idx; i--) {
 					printf("\b");
 				}
@@ -473,58 +519,60 @@ delete_char:
 				break;
 			case 'U'-'@':
 				if(idx==0) break;
-				sprintf(killring,"%.*s",(int)idx,command);
-				for(size_t i=0; i<idx; i++) printf("\b");
-				printf("%.*s",(int)(curlen-idx),command+idx);
+				killring.len=0;
 				for(size_t i=0; i<idx; i++) {
-					command[i]=command[i+idx];
+					da_append(&killring,command->items[i]);
+					printf("\b");
+				}
+				printf("%.*s",(int)(curlen-idx),command->items+idx);
+				for(size_t i=0; i<idx; i++) {
+					command->items[i]=command->items[i+idx];
 					printf(" ");
 				}
 				for(size_t i=0; i<curlen; i++) printf("\b");
 				fflush(stdout);
 				curlen-=idx;
+				command->len=curlen;
 				idx=0;
 				break;
 			case 'Y'-'@':
-				size_t klen=strlen(killring);
+				size_t klen=killring.len;
 				if(klen==0) break;
-				if(klen+curlen>=MAX_CMD_LEN) klen=MAX_CMD_LEN-curlen-1;
-				printf("%.*s%s",(int)klen,killring,command+idx);
-				for(size_t i=idx; i<curlen && i+klen+1<MAX_CMD_LEN; i++) {
-					command[i+klen]=command[i];
+				printf("%.*s%s",(int)klen,killring.items,command->items+idx);
+				for(size_t i=idx; i<curlen; i++) {
+					da_append(&killring,command->items[i]);
 					printf("\b");
 				}
-				for(size_t i=0; i<klen; i++) {
-					command[i+idx]=killring[i];
+				command->len=idx;
+				for(size_t i=0; i<killring.len; i++) {
+					da_append(command,killring.items[i]);
 				}
 				fflush(stdout);
 				curlen+=klen;
+				killring.len=klen;
 				idx+=klen;
 				break;
 			default:
 				if(ch<' ') continue;
-				if(idx+1>=MAX_CMD_LEN) continue;
+				da_append(command,ch);
 				if(idx<curlen) {
-					printf(" %.*s\b",(int)(curlen-idx),command+idx);
+					printf(" %.*s\b",(int)(curlen-idx),command->items+idx);
 					for(size_t i=curlen; i>idx; i--) {
-						command[i]=command[i-1];
+						command->items[i]=command->items[i-1];
 						printf("\b");
 					}
+					command->items[idx]=ch;
 				}
 				curlen++;
-				if(curlen>=MAX_CMD_LEN) curlen=MAX_CMD_LEN-1;
 				printf("%c",ch);
 				fflush(stdout);
-				command[idx]=ch;
 				edited=true;
 				idx++;
 		}
-		if(curlen<MAX_CMD_LEN) command[curlen]='\0';
-		else curlen--;
 	}
 	for(size_t i=(prompt_len+curlen-idx)/term_width+1; i>0; i--) printf("\r\n");
 	tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
-	command[MAX_CMD_LEN-1]='\0';
+	da_append(command,'\0');
 }
 
 void add_history(char* command,StrArr* history) {
@@ -767,7 +815,8 @@ int main(int argc,char** argv) {
 	sprintf(shlvlbuf,"%d",shlvl);
 	setenv("SHLVL",shlvlbuf,1);
 	StrArr history={0};
-	char command[MAX_CMD_LEN];
+	StrBuf command={0};
+	StrBuf parsedcmd={0};
 	char cwd[PATH_MAX];
 	char promptpath[PATH_MAX];
 	char prompt[PATH_MAX*2];
@@ -785,11 +834,11 @@ int main(int argc,char** argv) {
 		if(WEXITSTATUS(status)>0) {
 			sprintf(prompt+strlen(pname)+strlen(promptpath)+2,"[%s] > ",retbuf);
 		}
-		readline(prompt,command,history);
-		char* trimmed=command;
+		readline(prompt,&command,history);
+		char* trimmed=command.items;
 		trim(&trimmed);
 		add_history(trimmed,&history);
-		if(!parse_args(&cmds,trimmed)) continue;
+		if(!parse_args(&cmds,trimmed,&parsedcmd)) continue;
 		run_command(&cmds,&history,&cwd,&status,homedir);
 	}
 }
