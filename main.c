@@ -822,6 +822,24 @@ int main(int argc,char** argv) {
 	char prompt[PATH_MAX*2];
 	Cmds cmds={0};
 	int status=0;
+	if(argc>1) {
+		FILE* script=fopen(argv[1],"rb");
+		if(script==NULL) {
+			fprintf(stderr,"%s: %s: %s\n",pname,argv[1],strerror(errno));
+			return 1;
+		}
+		ssize_t count=0;
+		char* curcmd=NULL;
+		for(size_t n=0; (count=getline(&curcmd,&n,script))!=-1;) {
+			char* endl=strchr(curcmd,'\n');
+			if(endl) *endl='\0';
+			if(!parse_args(&cmds,curcmd,&parsedcmd)) continue;
+			run_command(&cmds,&history,&cwd,&status,homedir);
+		}
+		if(curcmd) free(curcmd);
+		fclose(script);
+		return WEXITSTATUS(status);
+	}
 	populate_history(&history,homedir);
 	while(1) {
 		getcwd(cwd,PATH_MAX);
