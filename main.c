@@ -789,6 +789,7 @@ int main(int argc,char** argv) {
 	pname=argv[0];
 	char* homedir=getenv("HOME");
 	char* pathenv=getenv("PATH");
+	bool login=false;
 	if(homedir==NULL) {
 		homedir=malloc(PATH_MAX);
 		sprintf(homedir,"/home/%s",getpwuid(getuid())->pw_name);
@@ -801,7 +802,11 @@ int main(int argc,char** argv) {
 	if(strlen(pname)==0 || argc<1) {
 		pname="(abysh)";
 		fprintf(stderr,"%s: warning: weird environment\n",pname);
+	} else if(pname[0]=='-') {
+		login=true;
+		pname++;
 	}
+	(void)login;
 	char* shlvlenv=getenv("SHLVL");
 	if(shlvlenv==NULL) shlvlenv="";
 	int shlvl=atoi(shlvlenv);
