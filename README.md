@@ -29,9 +29,14 @@ Or, if you're lazy, just run the `build.sh` script:
 - Evaluating script files (shebang)
 
 ## Upcoming Features
+- Tab auto-complete
+- Command aliases
+- Actually handling command-line arguments
+- Smarter history saving
 - File stream redirections
 - Background jobs
 - History fuzzy navigation (C-r/C-s)
+- Acting normally in tty
 - Acting normally over SSH
 - Coloooooors and customization
 - Handling the `.abyshrc` file
