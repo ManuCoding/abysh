@@ -359,6 +359,7 @@ void readline(char* prompt,StrBuf* command,StrArr history) {
 	raw.c_cc[VMIN]=1;
 	raw.c_cc[VTIME]=0;
 	printf("%s",prompt);
+	fflush(stdout);
 	command->len=0;
 	tcsetattr(keys_fd,TCSAFLUSH,&raw);
 	unsigned char ch=0;
@@ -569,6 +570,7 @@ delete_char:
 				edited=true;
 				idx++;
 		}
+		fflush(stdout);
 	}
 	for(size_t i=(prompt_len+curlen-idx)/term_width+1; i>0; i--) printf("\r\n");
 	tcsetattr(keys_fd,TCSAFLUSH,&initial_state);
