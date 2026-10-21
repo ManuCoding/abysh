@@ -10,34 +10,48 @@
 int lastexit=0;
 char *args[1+CMD_LEN/2]={0};
 
-void parsecmd(char *curcmd,int *argsize) {
+typedef struct {
+	size_t len;
+	char *s;
+} S;
+
+// TODO implement `replacerange` function
+//      this will help finalize the concept of "dynamic string"
+
+void parsecmd(S curcmd,int *argsize) {
 	*argsize=0;
-	while(*curcmd) {
-		while(*curcmd==' ') {
-			*curcmd='\0';
-			curcmd++;
+	while(curcmd.len) {
+		while(curcmd.len && *curcmd.s==' ') {
+			*curcmd.s='\0';
+			curcmd.s++;
+			curcmd.len--;
 		}
-		if(!*curcmd) break;
-		args[(*argsize)++]=curcmd;
-		while(*curcmd && !isspace(*curcmd)) curcmd++;
+		if(!curcmd.len) break;
+		args[(*argsize)++]=curcmd.s;
+		while(curcmd.len && !isspace(*curcmd.s)) {
+			curcmd.s++;
+			curcmd.len--;
+		}
 	}
 	args[*argsize]=NULL;
 }
 
 int main() {
 	for(;;) {
-		static char cmd[CMD_LEN];
-		memset(cmd,0,sizeof(cmd));
+		static char cmdstr[CMD_LEN];
+		memset(cmdstr,0,sizeof(cmdstr));
 
 		if(lastexit) printf("abysh [%d] > ",lastexit);
 		else printf("abysh > ");
 		fflush(stdout);
 
-		if(!fgets(cmd,sizeof(cmd),stdin)) {
+		if(!fgets(cmdstr,sizeof(cmdstr),stdin)) {
 			return lastexit;
 		}
-		char *newline=strchr(cmd,'\n');
+		char *newline=strchr(cmdstr,'\n');
 		if(newline) *newline='\0';
+
+		S cmd={ .len=strlen(cmdstr), .s=cmdstr };
 
 		int argsize=0;
 		parsecmd(cmd,&argsize);
